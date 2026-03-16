@@ -1,0 +1,23 @@
+{
+  "name": "daikonbot",
+  "version": "1.0.0",
+  "description": "The best Discord bot EVER!?",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "check:env": "node scripts/check-env.js",
+    "start": "node index.js",
+    "start:prod": "NODE_ENV=production node index.js",
+    "deploy": "node deploy.js",
+    "deploy:commands": "npm run check:env && npm run deploy",
+    "prod:check": "npm run check:env"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "discord.js": "^14.17.3",
+    "dotenv": "^16.4.7"
+  }
+}

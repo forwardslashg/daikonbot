@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Process managers
+pids/
+*.pid
+*.pid.lock
+
+# Coverage and reports
+coverage/
+.nyc_output/
+
+# Build and cache artifacts
+dist/
+build/
+.tmp/
+tmp/
+.cache/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode-test/
+
+# Local mutable runtime data
+data/ai-settings.json
