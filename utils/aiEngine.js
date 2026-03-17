@@ -56,6 +56,7 @@ const MAX_CHARS = 1980;
 // ─── Persistent AI settings ──────────────────────────────────────────────────
 const DATA_DIR = join(__dirname, '..', 'data');
 const AI_SETTINGS_FILE = join(DATA_DIR, 'ai-settings.json');
+const AI_MODERATION_FILE = join(DATA_DIR, 'ai-moderation.json');
 
 const DEFAULT_SETTINGS = {
   default: {
@@ -66,6 +67,7 @@ const DEFAULT_SETTINGS = {
 };
 
 let _aiSettingsCache = null;
+let _moderationLoaded = false;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -137,6 +139,73 @@ function saveSettings() {
     mkdirSync(DATA_DIR, { recursive: true });
   }
   writeFileSync(AI_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function ensureModerationLoaded() {
+  if (_moderationLoaded) return;
+
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  _banStore.clear();
+  _userLimitStore.clear();
+
+  if (!existsSync(AI_MODERATION_FILE)) {
+    _moderationLoaded = true;
+    saveModeration();
+    return;
+  }
+
+  try {
+    const raw = readFileSync(AI_MODERATION_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+
+    const bans = parsed?.bans && typeof parsed.bans === 'object' ? parsed.bans : {};
+    for (const [userId, ban] of Object.entries(bans)) {
+      if (!ban || typeof ban !== 'object') continue;
+      const reason = typeof ban.reason === 'string' && ban.reason.trim() ? ban.reason.trim() : 'No reason given.';
+      const bannedAt = Number.isFinite(ban.bannedAt) ? ban.bannedAt : Date.now();
+      const bannedBy = typeof ban.bannedBy === 'string' ? ban.bannedBy : null;
+      _banStore.set(userId, { reason, bannedAt, bannedBy });
+    }
+
+    const customLimits = parsed?.customLimits && typeof parsed.customLimits === 'object' ? parsed.customLimits : {};
+    for (const [userId, limit] of Object.entries(customLimits)) {
+      const normalized = Number.isInteger(limit) && limit >= 0 ? limit : null;
+      if (normalized !== null) _userLimitStore.set(userId, normalized);
+    }
+  } catch {
+    // Fall back to empty moderation state on malformed files.
+  }
+
+  _moderationLoaded = true;
+}
+
+function saveModeration() {
+  if (!_moderationLoaded) {
+    _moderationLoaded = true;
+  }
+
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  const bans = {};
+  for (const [userId, value] of _banStore.entries()) {
+    bans[userId] = value;
+  }
+
+  const customLimits = {};
+  for (const [userId, value] of _userLimitStore.entries()) {
+    customLimits[userId] = value;
+  }
+
+  writeFileSync(
+    AI_MODERATION_FILE,
+    JSON.stringify({ bans, customLimits }, null, 2),
+    'utf8',
+  );
 }
 
 function getDefaultAISelection() {
@@ -269,35 +338,49 @@ function remainingUses(userId) {
 
 // ─── Ban management ───────────────────────────────────────────────────────────
 function banUser(userId, reason, bannedBy) {
+  ensureModerationLoaded();
   _banStore.set(userId, { reason: reason || 'No reason given.', bannedAt: Date.now(), bannedBy });
+  saveModeration();
 }
 
 function unbanUser(userId) {
-  return _banStore.delete(userId);
+  ensureModerationLoaded();
+  const didDelete = _banStore.delete(userId);
+  if (didDelete) saveModeration();
+  return didDelete;
 }
 
 function getBan(userId) {
+  ensureModerationLoaded();
   return _banStore.get(userId) ?? null;
 }
 
 function isBanned(userId) {
+  ensureModerationLoaded();
   return _banStore.has(userId);
 }
 
 // ─── Per-user limit overrides ─────────────────────────────────────────────────
 function setUserLimit(userId, limit) {
+  ensureModerationLoaded();
   _userLimitStore.set(userId, limit);
+  saveModeration();
 }
 
 function removeUserLimit(userId) {
-  return _userLimitStore.delete(userId);
+  ensureModerationLoaded();
+  const didDelete = _userLimitStore.delete(userId);
+  if (didDelete) saveModeration();
+  return didDelete;
 }
 
 function getUserLimit(userId) {
+  ensureModerationLoaded();
   return _userLimitStore.has(userId) ? _userLimitStore.get(userId) : null;
 }
 
 function getAllRestrictions() {
+  ensureModerationLoaded();
   const allIds = new Set([..._banStore.keys(), ..._userLimitStore.keys()]);
   return [...allIds].map((id) => ({
     userId: id,

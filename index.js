@@ -152,6 +152,29 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
+  // ── Message context menu commands (right-click on a message) ───────────────
+  if (interaction.isMessageContextMenuCommand()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command) {
+      console.warn(`[WARN] Unknown message context menu: ${interaction.commandName}`);
+      return;
+    }
+    const rateCheck = checkGlobalRateLimit(interaction.user.id);
+    if (!rateCheck.allowed) {
+      await interaction.reply({
+        content: `You're using commands too fast. Please wait **${rateCheck.retryAfter}s** before trying again.`,
+        ephemeral: true,
+      });
+      return;
+    }
+    try {
+      await command.execute(interaction);
+    } catch (err) {
+      await safeReplyError(interaction, `ctxmsg:${interaction.commandName}`, err);
+    }
+    return;
+  }
+
   // ── Button interactions ─────────────────────────────────────────────────────
   if (interaction.isButton()) {
     // AI conversation buttons
