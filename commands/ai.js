@@ -122,11 +122,6 @@ function makeButtonsWithContext(
       .setEmoji('🧠')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId(BTN_FOLLOWUP(userId))
-      .setLabel('Follow up')
-      .setEmoji('💬')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
       .setCustomId(BTN_NEWTOPIC(userId))
       .setLabel(turnCount > 0 ? 'New topic' : 'End chat')
       .setEmoji('🗑️')
@@ -169,13 +164,6 @@ function makeButtonsV2(
       label: 'Summarize',
       emoji: { name: '🧠' },
       style: ButtonStyle.Secondary,
-    },
-    {
-      type: 2,
-      custom_id: BTN_FOLLOWUP(userId),
-      label: 'Follow up',
-      emoji: { name: '💬' },
-      style: ButtonStyle.Primary,
     },
     {
       type: 2,
@@ -361,7 +349,7 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     let geminiRateLimited = false;
     let retryDelaySeconds = null;
 
-    const { text, toolCalls } = await sendWithRetry(() =>
+    const { text } = await sendWithRetry(() =>
       callAIWithTools(sysInstruction, contextBlock, priorHistory, { userId, maxToolCalls: 4 }, AI_TOOLS, (name, args) =>
         executeAITool(name, { ...(args ?? {}), __toolState: toolState }, userId),
       ),
@@ -393,10 +381,6 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     let finalText = geminiRateLimited
       ? `-# This request was rate-limited by Gemini and auto-retried after ${retryNote}.\n\n${text}`
       : text;
-
-    if (toolCalls > 0) {
-      finalText = `-# Used ${toolCalls} live data tool call(s).\n\n${finalText}`;
-    }
 
     const includeAniList = askedAniList || toolState.usedAniListTool || toolState.needsAniListAccess;
     const needsAniListAccess = includeAniList && (!linkedAniList || toolState.needsAniListAccess);
