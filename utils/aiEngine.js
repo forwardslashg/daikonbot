@@ -655,6 +655,117 @@ async function callAI(systemInstruction, userMessage, history = [], options = {}
   throw new Error(`Unsupported AI provider: ${selection.provider}`);
 }
 
+function safeJsonParse(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractToolEnvelope(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return null;
+
+  // Try direct JSON first.
+  const direct = safeJsonParse(trimmed);
+  if (direct?.tool && typeof direct.tool === 'string') {
+    return direct;
+  }
+
+  // Then try fenced json blocks.
+  const blockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (!blockMatch) return null;
+
+  const inBlock = safeJsonParse(blockMatch[1].trim());
+  if (inBlock?.tool && typeof inBlock.tool === 'string') {
+    return inBlock;
+  }
+
+  return null;
+}
+
+function buildToolProtocol(tools = []) {
+  if (!tools.length) return '';
+
+  const lines = [
+    'TOOLS',
+    'You can call external tools when needed. If a tool is needed, reply with ONLY valid JSON in this exact shape:',
+    '{"tool":"tool_name","arguments":{"key":"value"}}',
+    'No markdown, no backticks, and no extra text in a tool call response.',
+    'After tool output is provided, continue normally and answer the user.',
+    'Available tools:',
+  ];
+
+  for (const tool of tools) {
+    lines.push(`- ${tool.name}: ${tool.description}`);
+    if (tool.argumentsSchema) {
+      lines.push(`  arguments schema: ${JSON.stringify(tool.argumentsSchema)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Call AI and allow explicit tool-call envelopes across providers.
+ * @param {string} systemInstruction
+ * @param {string} userMessage
+ * @param {Array} history
+ * @param {{ userId?: string, provider?: string, model?: string, maxToolCalls?: number }} options
+ * @param {{ name: string, description: string, argumentsSchema?: object }[]} tools
+ * @param {(name: string, args: object) => Promise<any>} executeTool
+ * @returns {Promise<{ text: string, toolCalls: number }>} 
+ */
+async function callAIWithTools(systemInstruction, userMessage, history = [], options = {}, tools = [], executeTool) {
+  const maxToolCalls = Number(options.maxToolCalls) > 0 ? Number(options.maxToolCalls) : 3;
+  const toolMap = new Map((tools ?? []).map((t) => [t.name, t]));
+  const workingHistory = Array.isArray(history) ? [...history] : [];
+
+  let currentPrompt = userMessage;
+  let toolCalls = 0;
+
+  const protocol = buildToolProtocol(tools);
+  const mergedSystemInstruction = protocol
+    ? `${systemInstruction}\n\n${protocol}`
+    : systemInstruction;
+
+  while (true) {
+    const output = await callAI(mergedSystemInstruction, currentPrompt, workingHistory, options);
+    const envelope = extractToolEnvelope(output);
+
+    if (!envelope || !envelope.tool || toolCalls >= maxToolCalls) {
+      return { text: output, toolCalls };
+    }
+
+    const toolInfo = toolMap.get(envelope.tool);
+    if (!toolInfo || typeof executeTool !== 'function') {
+      return { text: output, toolCalls };
+    }
+
+    let toolResult;
+    try {
+      toolResult = await executeTool(envelope.tool, envelope.arguments ?? {});
+      toolCalls += 1;
+    } catch (err) {
+      toolResult = {
+        error: String(err?.message ?? err ?? 'Tool execution failed'),
+      };
+      toolCalls += 1;
+    }
+
+    workingHistory.push({ role: 'model', parts: [{ text: output }] });
+    workingHistory.push({
+      role: 'user',
+      parts: [{
+        text: `TOOL_RESULT ${envelope.tool}:\n${JSON.stringify(toolResult)}`,
+      }],
+    });
+
+    currentPrompt = 'Use the TOOL_RESULT above to answer the user directly. If more tool data is required, call another tool.';
+  }
+}
+
 // ─── System instruction builder ───────────────────────────────────────────────
 function buildSystemInstruction(userId, mode = 'chat', provider = null) {
   const now = new Date();
@@ -688,7 +799,7 @@ ${rateLimitNote}
 BEHAVIOUR
 - Be direct and honest. Say so if you do not know something.
 - If asked what you are, say you are an AI assistant in a Discord bot powered by ${activeProvider}.
-- You cannot browse the internet or take actions beyond responding.`;
+- You cannot take actions beyond responding, but you may use configured tools when available.`;
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -746,5 +857,6 @@ module.exports = {
   sendWithRetry,
   getGeminiRateLimitInfo,
   callAI,
+  callAIWithTools,
   buildSystemInstruction,
 };

@@ -193,7 +193,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── Modal submissions ───────────────────────────────────────────────────────
   if (interaction.isModalSubmit()) {
-    if (interaction.customId.startsWith('ai_modal:')) {
+    if (interaction.customId.startsWith('ai_modal_')) {
       const aiCmd = getAICommand();
       if (aiCmd?.handleModal) {
         try {
