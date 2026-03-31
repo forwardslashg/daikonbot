@@ -69,8 +69,8 @@ async function handleLimit(interaction) {
   setUserLimit(target.id, limit);
 
   const desc = limit === 0
-    ? `🔒 **${target.username}** (\`${target.id}\`) now has **no access** to AI commands (limit set to 0).`
-    : `⚙️ **${target.username}** (\`${target.id}\`) AI limit set to **${limit} requests/hour**.`;
+    ? `🔒 **${target.username}** (\`${target.id}\`) now has **no access** to AI commands (credit limit set to 0).`
+    : `⚙️ **${target.username}** (\`${target.id}\`) AI credit limit set to **${limit} credits/hour**.`;
 
   await interaction.reply({ content: desc, ephemeral: true });
 }
@@ -80,7 +80,7 @@ async function handleResetLimit(interaction) {
 
   if (getUserLimit(target.id) === null) {
     return interaction.reply({
-      content: `**${target.username}** already uses the default limit (${HOURLY_MAX}/hour).`,
+      content: `**${target.username}** already uses the default limit (${HOURLY_MAX} credits/hour).`,
       ephemeral: true,
     });
   }
@@ -88,7 +88,7 @@ async function handleResetLimit(interaction) {
   removeUserLimit(target.id);
 
   await interaction.reply({
-    content: `✅ **${target.username}** (\`${target.id}\`) reset to default limit (**${HOURLY_MAX} requests/hour**).`,
+    content: `✅ **${target.username}** (\`${target.id}\`) reset to default limit (**${HOURLY_MAX} credits/hour**).`,
     ephemeral: true,
   });
 }
@@ -110,9 +110,9 @@ async function handleStatus(interaction) {
   if (customLimit !== null) {
     lines.push(customLimit === 0
       ? `🔒 **Custom limit:** no access (0/hour)`
-      : `⚙️ **Custom limit:** ${customLimit}/hour`);
+      : `⚙️ **Custom limit:** ${customLimit} credits/hour`);
   } else {
-    lines.push(`⚙️ **Limit:** default (${HOURLY_MAX}/hour)`);
+    lines.push(`⚙️ **Limit:** default (${HOURLY_MAX} credits/hour)`);
   }
 
   await interaction.reply({ content: lines.join('\n'), ephemeral: true });
@@ -160,12 +160,12 @@ module.exports = {
     .addSubcommand((sub) =>
       sub
         .setName('limit')
-        .setDescription('Set a custom hourly AI request limit for a user (0 = no access)')
+        .setDescription('Set a custom hourly AI credit limit for a user (0 = no access)')
         .addUserOption((opt) => opt.setName('user').setDescription('Target user').setRequired(true))
         .addIntegerOption((opt) =>
           opt
             .setName('limit')
-            .setDescription('Requests allowed per hour (0 = blocked, default is ' + HOURLY_MAX + ')')
+            .setDescription('Credits allowed per hour (0 = blocked, default is ' + HOURLY_MAX + ')')
             .setRequired(true)
             .setMinValue(0)
             .setMaxValue(100),

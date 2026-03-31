@@ -8,6 +8,7 @@ Copy `.env.example` values into your real environment (or `.env`) and set real s
 - `DISCORD_CLIENT_ID` (required)
 - `GOOGLE_AI_KEY` (optional, enables Gemini AI commands)
 - `GROQ_API_KEY` (optional, enables Groq AI commands)
+- `GITHUB_MODELS_TOKEN` or `GITHUB_TOKEN` (optional, enables GitHub Models AI commands)
 - `KLIPY_API_KEY` (optional, enables `/toiletfella`)
 
 ## 2. Validate required settings

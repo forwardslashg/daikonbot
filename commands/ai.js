@@ -10,9 +10,12 @@ const {
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
-  checkRateLimit,
-  consumeRateLimit,
-  remainingUses,
+  checkRateLimitForSelection,
+  consumeRateLimitForSelection,
+  remainingCredits,
+  getModelCreditCost,
+  getGlobalGeminiUsage,
+  AI_PROVIDERS,
   getSession,
   appendSession,
   clearSession,
@@ -35,6 +38,9 @@ const {
   getAniListWatchingList,
   getAniListRecommendationsByTitle,
   getAniListTrendingSeason,
+  getAniListCompletedList,
+  getAniListTopByGenre,
+  getAniListUpcomingAiring,
 } = require('../utils/anilist');
 
 // ─── Button / modal id helpers ────────────────────────────────────────────────
@@ -84,6 +90,31 @@ const AI_TOOLS = [
     argumentsSchema: {
       season: 'WINTER|SPRING|SUMMER|FALL (optional)',
       year: 'number (optional)',
+      limit: 'number (optional; 1-20)',
+    },
+  },
+  {
+    name: 'anilist_completed_recent',
+    description: 'Get anime recently completed by an AniList user.',
+    argumentsSchema: {
+      username: 'string (optional; omit to use linked username)',
+      limit: 'number (optional; 1-25)',
+    },
+  },
+  {
+    name: 'anilist_top_by_genre',
+    description: 'Find top anime by genre, optionally filtered by season/year.',
+    argumentsSchema: {
+      genre: 'string (required)',
+      season: 'WINTER|SPRING|SUMMER|FALL (optional)',
+      year: 'number (optional)',
+      limit: 'number (optional; 1-20)',
+    },
+  },
+  {
+    name: 'anilist_upcoming_airing',
+    description: 'Get upcoming anime episode airings from AniList.',
+    argumentsSchema: {
       limit: 'number (optional; 1-20)',
     },
   },
@@ -242,14 +273,19 @@ async function buildContextBlock(interaction, prompt) {
 // ─── Footer helper ────────────────────────────────────────────────────────────
 function makeFooter(userId, turns) {
   const selection = getEffectiveAISelection(userId);
-  const modelInfo = ` · ${selection.provider}:${selection.model}`;
+  const modelCost = getModelCreditCost(selection.provider, selection.model);
+  const modelInfo = ` · ${selection.provider}:${selection.model} (${modelCost}c)`;
 
   if (isOwner(userId)) {
     return turns > 0 ? `-# Turn ${turns + 1} · no rate limits${modelInfo}` : `-# no rate limits${modelInfo}`;
   }
-  const rem      = remainingUses(userId);
+  const rem      = remainingCredits(userId);
   const turnNote = turns > 0 ? ` · turn ${turns + 1}` : '';
-  return `-# ${rem} AI use(s) remaining this hour${turnNote}${modelInfo}`;
+  const geminiUsage = getGlobalGeminiUsage();
+  const geminiNote = selection.provider === AI_PROVIDERS.GEMINI
+    ? ` · Gemini global ${geminiUsage.used}/${geminiUsage.limit} today`
+    : '';
+  return `-# ${rem} AI credit(s) remaining this hour${turnNote}${modelInfo}${geminiNote}`;
 }
 
 function resolveAniListUsername(userId, args) {
@@ -315,6 +351,36 @@ async function executeAITool(name, args, userId) {
     });
   }
 
+  if (name === 'anilist_completed_recent') {
+    let username;
+    try {
+      username = resolveAniListUsername(userId, args);
+    } catch (err) {
+      if (toolState) toolState.needsAniListAccess = true;
+      throw err;
+    }
+
+    const limit = Number(args.limit) || 10;
+    const completed = await getAniListCompletedList(username, limit);
+    return { username, completed };
+  }
+
+  if (name === 'anilist_top_by_genre') {
+    const genre = String(args.genre ?? '').trim();
+    if (!genre) throw new Error('The tool requires a non-empty genre.');
+
+    return getAniListTopByGenre({
+      genre,
+      season: args.season,
+      year: args.year,
+      limit: args.limit,
+    });
+  }
+
+  if (name === 'anilist_upcoming_airing') {
+    return getAniListUpcomingAiring(args.limit);
+  }
+
   throw new Error(`Unknown tool: ${name}`);
 }
 
@@ -323,20 +389,21 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
   const userId = interaction.user.id;
   const linkedAniList = getAniListUsername(userId);
   const promptLower = String(promptText ?? '').toLowerCase();
-  const askedAniList = /\banilist\b|\bmy anime\b|\banime list\b|\bwatchlist\b|\brecommend\b/.test(promptLower);
+  const askedAniList = /\banilist\b|\bmy anime\b|\banime list\b|\bwatchlist\b|\brecommend\b|\bgenre\b|\bupcoming\b|\bairing\b|\bcompleted\b/.test(promptLower);
   const toolState = {
     usedAniListTool: false,
     needsAniListAccess: false,
   };
 
   if (!isOwner(userId)) {
-    const check = checkRateLimit(userId);
+    const selection = getEffectiveAISelection(userId);
+    const check = checkRateLimitForSelection(userId, selection.provider, selection.model);
     if (!check.allowed) {
       const method = interaction.deferred || interaction.replied ? 'editReply' : 'reply';
       await interaction[method]({ content: check.message, ephemeral: true });
       return;
     }
-    consumeRateLimit(userId);
+    consumeRateLimitForSelection(userId, selection.provider, selection.model);
   }
 
   const contextBlock   = await buildContextBlock(interaction, promptText);
@@ -642,7 +709,8 @@ module.exports = {
     const userId = interaction.user.id;
 
     if (!isOwner(userId)) {
-      const check = checkRateLimit(userId);
+      const selection = getEffectiveAISelection(userId);
+      const check = checkRateLimitForSelection(userId, selection.provider, selection.model);
       if (!check.allowed) {
         await interaction.reply({ content: check.message, ephemeral: true });
         return;

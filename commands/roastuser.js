@@ -72,7 +72,7 @@ module.exports = {
         .setColor(0xef4444)
         .setFooter({ text: `Requested by ${interaction.user.username}` });
 
-      const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI use(s) remaining this hour.`;
+      const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
 
       await sendWithRetry(() =>
         interaction.editReply({ embeds: [embed], content: footer ?? undefined }),

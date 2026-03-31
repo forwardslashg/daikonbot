@@ -1,8 +1,13 @@
-const { SlashCommandBuilder } = require('discord.js');
+const {
+  SlashCommandBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+} = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
-  AI_PROVIDERS,
   PROVIDER_MODELS,
   getUserAISelection,
   getDefaultAISelection,
@@ -10,196 +15,215 @@ const {
   setUserAISelection,
   resetUserAISelection,
   setDefaultAISelection,
+  getModelCreditCost,
+  getGlobalGeminiUsage,
 } = require('../utils/aiEngine');
 
-const PROVIDER_CHOICES = [
-  { name: 'Gemini', value: AI_PROVIDERS.GEMINI },
-  { name: 'Groq', value: AI_PROVIDERS.GROQ },
-];
+const SCOPE_USER = 'user';
+const SCOPE_DEFAULT = 'default';
 
-function providerChoices(opt) {
-  for (const choice of PROVIDER_CHOICES) {
-    opt.addChoices(choice);
+const SELECT_PREFIX = 'aimodel_select';
+const RESET_PREFIX = 'aimodel_reset';
+const REFRESH_PREFIX = 'aimodel_refresh';
+
+function flattenModelOptions() {
+  const options = [];
+
+  for (const [provider, models] of Object.entries(PROVIDER_MODELS)) {
+    for (const model of models) {
+      options.push({ provider, model });
+    }
   }
-  return opt;
+
+  return options;
 }
 
-function normalizeProvider(provider) {
-  return String(provider ?? '').toLowerCase();
+function scopeLabel(scope) {
+  return scope === SCOPE_DEFAULT ? 'global default' : 'your model';
 }
 
-function listModels(provider) {
-  const normalized = normalizeProvider(provider);
-  return PROVIDER_MODELS[normalized] ?? [];
+function selectionLabel(selection) {
+  return `${selection.provider}:${selection.model}`;
 }
 
-function validModel(provider, model) {
-  return listModels(provider).includes(model);
-}
+function buildStatusText(userId, scope, selected = null) {
+  const userSelection = getUserAISelection(userId);
+  const effective = selected ?? getEffectiveAISelection(userId);
+  const defaultSelection = getDefaultAISelection();
+  const cost = getModelCreditCost(effective.provider, effective.model);
+  const geminiUsage = getGlobalGeminiUsage();
 
-function ownerOnly(interaction) {
-  if (!isOwner(interaction.user.id)) {
-    interaction.reply({ content: 'Only the bot owner can use this subcommand.', ephemeral: true });
-    return false;
+  const lines = [
+    '**AI model picker**',
+    `Target: **${scopeLabel(scope)}**`,
+    `Selected: \`${selectionLabel(effective)}\` (${cost} credit(s)/request)`,
+    `Your override: ${userSelection ? `\`${selectionLabel(userSelection)}\`` : 'none (using default)'}`,
+    `Bot default: \`${selectionLabel(defaultSelection)}\``,
+    `Gemini global usage: **${geminiUsage.used}/${geminiUsage.limit}** today`,
+    '',
+    'Pick a model from the dropdown below.',
+  ];
+
+  if (scope === SCOPE_DEFAULT) {
+    lines.push('-# Owner mode: your selection updates the bot default for everyone.');
   }
-  return true;
+
+  return lines.join('\n');
+}
+
+function buildComponents(userId, scope, selected) {
+  const selectionValue = `${selected.provider}|${selected.model}`;
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${SELECT_PREFIX}:${userId}:${scope}`)
+    .setPlaceholder('Choose provider + model')
+    .addOptions(
+      flattenModelOptions().map((entry) => ({
+        label: `${entry.provider} / ${entry.model}`.slice(0, 100),
+        value: `${entry.provider}|${entry.model}`,
+        description: `${getModelCreditCost(entry.provider, entry.model)} credit(s) per request`.slice(0, 100),
+        default: `${entry.provider}|${entry.model}` === selectionValue,
+      })),
+    );
+
+  const rows = [new ActionRowBuilder().addComponents(menu)];
+
+  if (scope === SCOPE_USER) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${RESET_PREFIX}:${userId}`)
+          .setLabel('Reset to default')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`${REFRESH_PREFIX}:${userId}:${scope}`)
+          .setLabel('Refresh')
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    );
+  } else {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${REFRESH_PREFIX}:${userId}:${scope}`)
+          .setLabel('Refresh')
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    );
+  }
+
+  return rows;
+}
+
+function parseSelectionValue(value) {
+  const [provider, model] = String(value ?? '').split('|');
+  if (!provider || !model) return null;
+  return { provider, model };
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('aimodel')
-    .setDescription('View or change your AI provider/model (saved across restarts)')
-    .addSubcommand((sub) =>
-      sub
-        .setName('status')
-        .setDescription('Show your current AI provider/model selection'),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('set')
-        .setDescription('Set your AI provider/model')
-        .addStringOption((opt) =>
-          providerChoices(
-            opt
-              .setName('provider')
-              .setDescription('AI provider')
-              .setRequired(true),
-          ),
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName('model')
-            .setDescription('Model ID for the selected provider')
-            .setRequired(true)
-            .setMaxLength(120),
-        ),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('reset')
-        .setDescription('Reset to the bot default AI provider/model'),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('models')
-        .setDescription('List available models for a provider')
-        .addStringOption((opt) =>
-          providerChoices(
-            opt
-              .setName('provider')
-              .setDescription('Provider to list models for')
-              .setRequired(true),
-          ),
-        ),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('setdefault')
-        .setDescription('(Owner) Set the default AI provider/model for all users')
-        .addStringOption((opt) =>
-          providerChoices(
-            opt
-              .setName('provider')
-              .setDescription('AI provider')
-              .setRequired(true),
-          ),
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName('model')
-            .setDescription('Model ID for the selected provider')
-            .setRequired(true)
-            .setMaxLength(120),
+    .setDescription('Unified AI model picker with dropdown selection')
+    .addStringOption((opt) =>
+      opt
+        .setName('scope')
+        .setDescription('Choose whether to update your model or the bot default (owner only)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'My model', value: SCOPE_USER },
+          { name: 'Global default (owner only)', value: SCOPE_DEFAULT },
         ),
     )
     .setIntegrationTypes(userInstallConfig.integrationTypes)
     .setContexts(userInstallConfig.contexts),
 
   async execute(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const userId = interaction.user.id;
+    const scope = interaction.options.getString('scope') ?? SCOPE_USER;
 
-    if (sub === 'status') {
-      const userSelection = getUserAISelection(userId);
-      const effective = getEffectiveAISelection(userId);
-      const defaultSelection = getDefaultAISelection();
-
-      const lines = [
-        `**AI Model Status**`,
-        `Effective: \`${effective.provider}:${effective.model}\``,
-        `Your override: ${userSelection ? `\`${userSelection.provider}:${userSelection.model}\`` : 'none (using default)'}`,
-        `Default: \`${defaultSelection.provider}:${defaultSelection.model}\``,
-      ];
-
-      await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+    if (scope === SCOPE_DEFAULT && !isOwner(interaction.user.id)) {
+      await interaction.reply({ content: 'Only the bot owner can change the global default model.', ephemeral: true });
       return;
     }
 
-    if (sub === 'models') {
-      const provider = normalizeProvider(interaction.options.getString('provider', true));
-      const models = listModels(provider);
+    const selected = scope === SCOPE_DEFAULT
+      ? getDefaultAISelection()
+      : getEffectiveAISelection(interaction.user.id);
 
-      if (!models.length) {
-        await interaction.reply({ content: 'No models are configured for that provider.', ephemeral: true });
-        return;
+    await interaction.reply({
+      content: buildStatusText(interaction.user.id, scope, selected),
+      components: buildComponents(interaction.user.id, scope, selected),
+      ephemeral: true,
+    });
+  },
+
+  async handleSelectMenu(interaction) {
+    if (!interaction.customId.startsWith(`${SELECT_PREFIX}:`)) return false;
+
+    const [, targetUserId, scope] = interaction.customId.split(':');
+    if (interaction.user.id !== targetUserId) {
+      await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+      return true;
+    }
+
+    if (scope === SCOPE_DEFAULT && !isOwner(interaction.user.id)) {
+      await interaction.reply({ content: 'Only the bot owner can change the global default model.', ephemeral: true });
+      return true;
+    }
+
+    const parsed = parseSelectionValue(interaction.values?.[0]);
+    if (!parsed) {
+      await interaction.reply({ content: 'Invalid model selection.', ephemeral: true });
+      return true;
+    }
+
+    let saved;
+    if (scope === SCOPE_DEFAULT) {
+      saved = setDefaultAISelection(parsed.provider, parsed.model);
+    } else {
+      saved = setUserAISelection(interaction.user.id, parsed.provider, parsed.model);
+    }
+
+    await interaction.update({
+      content: `${buildStatusText(interaction.user.id, scope, saved)}\n\n✅ Updated ${scopeLabel(scope)} to \`${selectionLabel(saved)}\`.`,
+      components: buildComponents(interaction.user.id, scope, saved),
+    });
+
+    return true;
+  },
+
+  async handleButton(interaction) {
+    if (interaction.customId.startsWith(`${RESET_PREFIX}:`)) {
+      const [, targetUserId] = interaction.customId.split(':');
+      if (interaction.user.id !== targetUserId) {
+        await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+        return true;
       }
 
-      await interaction.reply({
-        content: `**${provider} models**\n${models.map((m) => `- \`${m}\``).join('\n')}`,
-        ephemeral: true,
+      resetUserAISelection(interaction.user.id);
+      const effective = getEffectiveAISelection(interaction.user.id);
+
+      await interaction.update({
+        content: `${buildStatusText(interaction.user.id, SCOPE_USER, effective)}\n\n✅ Reset complete. You are now using the bot default model.`,
+        components: buildComponents(interaction.user.id, SCOPE_USER, effective),
       });
-      return;
+      return true;
     }
 
-    if (sub === 'set') {
-      const provider = normalizeProvider(interaction.options.getString('provider', true));
-      const model = interaction.options.getString('model', true).trim();
-
-      if (!validModel(provider, model)) {
-        await interaction.reply({
-          content: `Invalid model for **${provider}**. Use \`/aimodel models\` to see valid options.`,
-          ephemeral: true,
-        });
-        return;
+    if (interaction.customId.startsWith(`${REFRESH_PREFIX}:`)) {
+      const [, targetUserId, scope] = interaction.customId.split(':');
+      if (interaction.user.id !== targetUserId) {
+        await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+        return true;
       }
 
-      const selection = setUserAISelection(userId, provider, model);
-      await interaction.reply({
-        content: `Saved. Your AI model is now \`${selection.provider}:${selection.model}\`.`,
-        ephemeral: true,
+      const selected = scope === SCOPE_DEFAULT ? getDefaultAISelection() : getEffectiveAISelection(interaction.user.id);
+      await interaction.update({
+        content: buildStatusText(interaction.user.id, scope, selected),
+        components: buildComponents(interaction.user.id, scope, selected),
       });
-      return;
+      return true;
     }
 
-    if (sub === 'reset') {
-      resetUserAISelection(userId);
-      const effective = getEffectiveAISelection(userId);
-      await interaction.reply({
-        content: `Reset complete. You're now using default \`${effective.provider}:${effective.model}\`.`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === 'setdefault') {
-      if (!ownerOnly(interaction)) return;
-
-      const provider = normalizeProvider(interaction.options.getString('provider', true));
-      const model = interaction.options.getString('model', true).trim();
-
-      if (!validModel(provider, model)) {
-        await interaction.reply({
-          content: `Invalid model for **${provider}**. Use \`/aimodel models\` to see valid options.`,
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const selection = setDefaultAISelection(provider, model);
-      await interaction.reply({
-        content: `Default AI updated to \`${selection.provider}:${selection.model}\`.`,
-        ephemeral: true,
-      });
-    }
+    return false;
   },
 };

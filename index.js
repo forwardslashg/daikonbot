@@ -93,6 +93,10 @@ function getAICommand() {
   return client.commands.get('ai');
 }
 
+function getAIModelCommand() {
+  return client.commands.get('aimodel');
+}
+
 async function safeReplyError(interaction, label) {
   console.error(`[ERROR] ${label}:`, ...arguments);
   const msg = { content: 'Something went wrong while running that command.', ephemeral: true };
@@ -177,6 +181,19 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── Button interactions ─────────────────────────────────────────────────────
   if (interaction.isButton()) {
+    if (interaction.customId.startsWith('aimodel_')) {
+      const modelCmd = getAIModelCommand();
+      if (modelCmd?.handleButton) {
+        try {
+          const handled = await modelCmd.handleButton(interaction);
+          if (handled) return;
+        } catch (err) {
+          await safeReplyError(interaction, `btn:${interaction.customId}`, err);
+          return;
+        }
+      }
+    }
+
     // AI conversation buttons
     if (interaction.customId.startsWith('ai_')) {
       const aiCmd = getAICommand();
@@ -188,6 +205,24 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     }
+    return;
+  }
+
+  // ── String select menu interactions ────────────────────────────────────────
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId.startsWith('aimodel_')) {
+      const modelCmd = getAIModelCommand();
+      if (modelCmd?.handleSelectMenu) {
+        try {
+          const handled = await modelCmd.handleSelectMenu(interaction);
+          if (handled) return;
+        } catch (err) {
+          await safeReplyError(interaction, `select:${interaction.customId}`, err);
+          return;
+        }
+      }
+    }
+
     return;
   }
 

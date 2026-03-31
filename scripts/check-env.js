@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
-const optional = ['GOOGLE_AI_KEY', 'GROQ_API_KEY', 'KLIPY_API_KEY'];
+const optional = ['GOOGLE_AI_KEY', 'GROQ_API_KEY', 'GITHUB_MODELS_TOKEN', 'GITHUB_TOKEN', 'KLIPY_API_KEY'];
 
 const missingRequired = required.filter((key) => !process.env[key]);
 const configuredOptional = optional.filter((key) => Boolean(process.env[key]));

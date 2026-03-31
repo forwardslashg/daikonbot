@@ -236,9 +236,152 @@ async function getAniListTrendingSeason({ season = null, year = null, limit = 10
   };
 }
 
+async function getAniListCompletedList(username, limit = 10) {
+  const safeLimit = clamp(Number(limit) || 10, 1, 25);
+
+  const query = `
+    query ($name: String, $type: MediaType, $statuses: [MediaListStatus], $sort: [MediaListSort]) {
+      MediaListCollection(userName: $name, type: $type, status_in: $statuses, sort: $sort) {
+        lists {
+          entries {
+            score
+            completedAt { year month day }
+            media {
+              id
+              episodes
+              meanScore
+              genres
+              title { romaji english }
+              seasonYear
+              format
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await anilistRequest(query, {
+    name: username,
+    type: 'ANIME',
+    statuses: ['COMPLETED'],
+    sort: ['UPDATED_TIME_DESC'],
+  });
+
+  const lists = data?.MediaListCollection?.lists ?? [];
+  const entries = lists.flatMap((list) => list.entries ?? []).slice(0, safeLimit);
+
+  return entries.map((entry) => ({
+    score: entry.score ?? null,
+    completedAt: entry.completedAt ?? null,
+    title: entry.media?.title?.english || entry.media?.title?.romaji || 'Unknown title',
+    episodes: entry.media?.episodes ?? null,
+    meanScore: entry.media?.meanScore ?? null,
+    format: entry.media?.format ?? null,
+    seasonYear: entry.media?.seasonYear ?? null,
+    genres: entry.media?.genres ?? [],
+  }));
+}
+
+async function getAniListTopByGenre({ genre, season = null, year = null, limit = 10 } = {}) {
+  const safeGenre = String(genre ?? '').trim();
+  if (!safeGenre) throw new Error('genre is required for AniList genre search.');
+
+  const safeLimit = clamp(Number(limit) || 10, 1, 20);
+  const safeYear = Number.isInteger(Number(year)) ? Number(year) : null;
+  const normalizedSeason = String(season || '').toUpperCase();
+  const safeSeason = ['WINTER', 'SPRING', 'SUMMER', 'FALL'].includes(normalizedSeason)
+    ? normalizedSeason
+    : null;
+
+  const query = `
+    query ($genre: String, $season: MediaSeason, $year: Int, $perPage: Int) {
+      Page(page: 1, perPage: $perPage) {
+        media(
+          type: ANIME
+          genre_in: [$genre]
+          season: $season
+          seasonYear: $year
+          sort: [SCORE_DESC, POPULARITY_DESC]
+        ) {
+          id
+          title { romaji english }
+          format
+          season
+          seasonYear
+          meanScore
+          popularity
+          genres
+        }
+      }
+    }
+  `;
+
+  const data = await anilistRequest(query, {
+    genre: safeGenre,
+    season: safeSeason,
+    year: safeYear,
+    perPage: safeLimit,
+  });
+
+  return {
+    genre: safeGenre,
+    season: safeSeason,
+    year: safeYear,
+    results: (data?.Page?.media ?? []).map((item) => ({
+      title: item.title?.english || item.title?.romaji || 'Unknown title',
+      format: item.format ?? null,
+      season: item.season ?? null,
+      seasonYear: item.seasonYear ?? null,
+      meanScore: item.meanScore ?? null,
+      popularity: item.popularity ?? null,
+      genres: item.genres ?? [],
+    })),
+  };
+}
+
+async function getAniListUpcomingAiring(limit = 10) {
+  const safeLimit = clamp(Number(limit) || 10, 1, 20);
+
+  const query = `
+    query ($perPage: Int, $now: Int) {
+      Page(page: 1, perPage: $perPage) {
+        airingSchedules(notYetAired: true, sort: [TIME]) {
+          airingAt
+          episode
+          media {
+            id
+            title { romaji english }
+            format
+            episodes
+            meanScore
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await anilistRequest(query, {
+    perPage: safeLimit,
+    now: Math.floor(Date.now() / 1000),
+  });
+
+  return (data?.Page?.airingSchedules ?? []).map((item) => ({
+    airingAt: item.airingAt ?? null,
+    episode: item.episode ?? null,
+    title: item.media?.title?.english || item.media?.title?.romaji || 'Unknown title',
+    format: item.media?.format ?? null,
+    totalEpisodes: item.media?.episodes ?? null,
+    meanScore: item.media?.meanScore ?? null,
+  }));
+}
+
 module.exports = {
   getAniListUserOverview,
   getAniListWatchingList,
   getAniListRecommendationsByTitle,
   getAniListTrendingSeason,
+  getAniListCompletedList,
+  getAniListTopByGenre,
+  getAniListUpcomingAiring,
 };

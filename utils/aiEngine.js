@@ -6,6 +6,7 @@
 
 const { ChannelType } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 
@@ -15,6 +16,7 @@ const OWNER_ID = '1470267547789033523';
 const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
+  GITHUB_MODELS: 'github',
 };
 
 const PROVIDER_MODELS = {
@@ -27,21 +29,39 @@ const PROVIDER_MODELS = {
     'llama-3.1-8b-instant',
     'deepseek-r1-distill-llama-70b',
   ],
+  [AI_PROVIDERS.GITHUB_MODELS]: [
+    'openai/gpt-4.1-mini',
+    'openai/gpt-4o-mini',
+    'meta/llama-3.3-70b-instruct',
+  ],
+};
+
+const MODEL_CREDIT_COST = {
+  'gemini-3-flash-preview': 1,
+  'gemini-3.1-pro-preview': 3,
+  'llama-3.3-70b-versatile': 2,
+  'llama-3.1-8b-instant': 1,
+  'deepseek-r1-distill-llama-70b': 2,
+  'openai/gpt-4.1-mini': 2,
+  'openai/gpt-4o-mini': 2,
+  'meta/llama-3.3-70b-instruct': 2,
 };
 
 const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
 const DEFAULT_MODEL_BY_PROVIDER = {
   [AI_PROVIDERS.GEMINI]: 'gemini-3-flash-preview',
   [AI_PROVIDERS.GROQ]: 'llama-3.3-70b-versatile',
+  [AI_PROVIDERS.GITHUB_MODELS]: 'openai/gpt-4.1-mini',
 };
 
 // Backward-compatible export name used by other files.
 const MODEL_NAME = DEFAULT_MODEL_BY_PROVIDER[AI_PROVIDERS.GEMINI];
 
 // Rate limits (non-owners only, shared across ALL ai-powered commands)
-const HOURLY_MAX = 6;
+const HOURLY_MAX = 12;
 const COOLDOWN_MS = 15_000;
 const HOUR_MS = 60 * 60 * 1000;
+const GLOBAL_GEMINI_DAILY_MAX = 20;
 
 // Conversation sessions
 const SESSION_TTL = 30 * 60 * 1000;
@@ -64,6 +84,10 @@ const DEFAULT_SETTINGS = {
     model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER],
   },
   users: {},
+  globalUsage: {
+    geminiDay: null,
+    geminiCount: 0,
+  },
 };
 
 let _aiSettingsCache = null;
@@ -125,7 +149,29 @@ function ensureSettingsLoaded() {
       if (normalized) users[userId] = normalized;
     }
 
-    _aiSettingsCache = { default: defaultSelection, users };
+    const currentDay = getUtcDayKey();
+    const rawGlobalUsage = parsed?.globalUsage && typeof parsed.globalUsage === 'object'
+      ? parsed.globalUsage
+      : {};
+
+    let geminiDay = typeof rawGlobalUsage.geminiDay === 'string' ? rawGlobalUsage.geminiDay : currentDay;
+    let geminiCount = Number.isInteger(rawGlobalUsage.geminiCount) && rawGlobalUsage.geminiCount >= 0
+      ? rawGlobalUsage.geminiCount
+      : 0;
+
+    if (geminiDay !== currentDay) {
+      geminiDay = currentDay;
+      geminiCount = 0;
+    }
+
+    _aiSettingsCache = {
+      default: defaultSelection,
+      users,
+      globalUsage: {
+        geminiDay,
+        geminiCount,
+      },
+    };
   } catch {
     _aiSettingsCache = clone(DEFAULT_SETTINGS);
   }
@@ -139,6 +185,77 @@ function saveSettings() {
     mkdirSync(DATA_DIR, { recursive: true });
   }
   writeFileSync(AI_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function getUtcDayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function ensureGlobalUsageState() {
+  const settings = ensureSettingsLoaded();
+  const day = getUtcDayKey();
+
+  if (!settings.globalUsage || typeof settings.globalUsage !== 'object') {
+    settings.globalUsage = { geminiDay: day, geminiCount: 0 };
+    saveSettings();
+  }
+
+  if (settings.globalUsage.geminiDay !== day) {
+    settings.globalUsage.geminiDay = day;
+    settings.globalUsage.geminiCount = 0;
+    saveSettings();
+  }
+
+  return settings.globalUsage;
+}
+
+function getModelCreditCost(provider, model) {
+  const selection = normalizeSelection(provider, model);
+  if (!selection) return 1;
+  return MODEL_CREDIT_COST[selection.model] ?? 1;
+}
+
+function getGlobalGeminiUsage() {
+  const usage = ensureGlobalUsageState();
+  return {
+    day: usage.geminiDay,
+    used: usage.geminiCount,
+    remaining: Math.max(0, GLOBAL_GEMINI_DAILY_MAX - usage.geminiCount),
+    limit: GLOBAL_GEMINI_DAILY_MAX,
+  };
+}
+
+function checkGlobalProviderLimit(provider) {
+  if (provider !== AI_PROVIDERS.GEMINI) {
+    return { allowed: true, remaining: Infinity, limit: null };
+  }
+
+  const usage = getGlobalGeminiUsage();
+  if (usage.used >= GLOBAL_GEMINI_DAILY_MAX) {
+    return {
+      allowed: false,
+      message: `Global Gemini daily cap reached (**${GLOBAL_GEMINI_DAILY_MAX}/day**). Choose a Groq or GitHub model until the next UTC day.`,
+      remaining: 0,
+      limit: GLOBAL_GEMINI_DAILY_MAX,
+      resetOn: usage.day,
+    };
+  }
+
+  return {
+    allowed: true,
+    remaining: usage.remaining,
+    limit: GLOBAL_GEMINI_DAILY_MAX,
+    resetOn: usage.day,
+  };
+}
+
+function consumeGlobalProviderLimit(provider) {
+  if (provider !== AI_PROVIDERS.GEMINI) return;
+  const settings = ensureSettingsLoaded();
+  const usage = ensureGlobalUsageState();
+  usage.geminiCount += 1;
+  settings.globalUsage = usage;
+  saveSettings();
 }
 
 function ensureModerationLoaded() {
@@ -263,7 +380,7 @@ const _rateLimitStore = new Map();
 // userId -> { reason, bannedAt, bannedBy }
 const _banStore = new Map();
 
-// userId -> custom hourly limit (overrides HOURLY_MAX; 0 = no access)
+// userId -> custom hourly credit limit (overrides HOURLY_MAX; 0 = no access)
 const _userLimitStore = new Map();
 
 function isOwner(userId) {
@@ -274,11 +391,23 @@ function isOwner(userId) {
  * Check without consuming. Returns { allowed: true, remaining } or { allowed: false, message }.
  */
 function checkRateLimit(userId) {
-  if (isOwner(userId)) return { allowed: true, remaining: Infinity };
+  const selection = getEffectiveAISelection(userId);
+  return checkRateLimitForSelection(userId, selection.provider, selection.model);
+}
+
+function checkRateLimitForSelection(userId, provider, model) {
+  if (isOwner(userId)) return { allowed: true, remaining: Infinity, cost: 0 };
 
   const ban = getBan(userId);
   if (ban) {
     return { allowed: false, message: `You've been banned from using AI commands. Reason: **${ban.reason}**` };
+  }
+
+  const selection = normalizeSelection(provider, model) ?? getEffectiveAISelection(userId);
+  const cost = getModelCreditCost(selection.provider, selection.model);
+  const globalLimit = checkGlobalProviderLimit(selection.provider);
+  if (!globalLimit.allowed) {
+    return { allowed: false, message: globalLimit.message };
   }
 
   const now = Date.now();
@@ -298,19 +427,32 @@ function checkRateLimit(userId) {
     return { allowed: false, message: `You don't have access to AI commands.` };
   }
 
-  if (effectiveCount >= limit) {
+  if (effectiveCount + cost > limit) {
     const resetMins = Math.ceil((HOUR_MS - windowAge) / 60_000);
     return {
       allowed: false,
-      message: `You've hit the limit of **${limit} AI requests/hour** (shared across all AI commands). Resets in **${resetMins} min(s)**.`,
+      message: `Not enough AI credits. This model costs **${cost}** credit(s), but you have **${Math.max(0, limit - effectiveCount)}** left this hour. Resets in **${resetMins} min(s)**.`,
     };
   }
 
-  return { allowed: true, remaining: limit - effectiveCount - 1 };
+  return {
+    allowed: true,
+    remaining: Math.max(0, limit - effectiveCount - cost),
+    cost,
+    globalRemaining: Number.isFinite(globalLimit.remaining) ? globalLimit.remaining : null,
+  };
 }
 
 function consumeRateLimit(userId) {
+  const selection = getEffectiveAISelection(userId);
+  consumeRateLimitForSelection(userId, selection.provider, selection.model);
+}
+
+function consumeRateLimitForSelection(userId, provider, model) {
   if (isOwner(userId)) return;
+
+  const selection = normalizeSelection(provider, model) ?? getEffectiveAISelection(userId);
+  const cost = getModelCreditCost(selection.provider, selection.model);
 
   const now = Date.now();
   const entry = _rateLimitStore.get(userId) ?? { count: 0, windowStart: now, lastRequest: 0 };
@@ -320,12 +462,17 @@ function consumeRateLimit(userId) {
     entry.windowStart = now;
   }
 
-  entry.count += 1;
+  entry.count += cost;
   entry.lastRequest = now;
   _rateLimitStore.set(userId, entry);
+  consumeGlobalProviderLimit(selection.provider);
 }
 
 function remainingUses(userId) {
+  return remainingCredits(userId);
+}
+
+function remainingCredits(userId) {
   if (isOwner(userId)) return Infinity;
 
   const entry = _rateLimitStore.get(userId);
@@ -626,6 +773,38 @@ async function callGroq(modelName, systemInstruction, userMessage, history = [])
   return data?.choices?.[0]?.message?.content?.trim() ?? '';
 }
 
+async function callGitHubModels(modelName, systemInstruction, userMessage, history = []) {
+  const token = process.env.GITHUB_MODELS_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) {
+    throw new Error('GITHUB_MODELS_TOKEN (or GITHUB_TOKEN) is missing.');
+  }
+
+  const client = new OpenAI({
+    apiKey: token,
+    baseURL: 'https://models.github.ai/inference',
+  });
+
+  const messages = [
+    { role: 'system', content: systemInstruction },
+  ];
+
+  for (const item of history) {
+    const content = historyText(item);
+    if (!content) continue;
+    messages.push({ role: item.role === 'model' ? 'assistant' : 'user', content });
+  }
+
+  messages.push({ role: 'user', content: userMessage });
+
+  const response = await client.chat.completions.create({
+    model: modelName,
+    messages,
+    temperature: 0.7,
+  });
+
+  return response?.choices?.[0]?.message?.content?.trim() ?? '';
+}
+
 // ─── Unified AI caller ────────────────────────────────────────────────────────
 /**
  * Call configured AI provider with optional multi-turn history.
@@ -650,6 +829,10 @@ async function callAI(systemInstruction, userMessage, history = [], options = {}
 
   if (selection.provider === AI_PROVIDERS.GROQ) {
     return callGroq(selection.model, systemInstruction, userMessage, history);
+  }
+
+  if (selection.provider === AI_PROVIDERS.GITHUB_MODELS) {
+    return callGitHubModels(selection.model, systemInstruction, userMessage, history);
   }
 
   throw new Error(`Unsupported AI provider: ${selection.provider}`);
@@ -775,7 +958,7 @@ function buildSystemInstruction(userId, mode = 'chat', provider = null) {
 
   const rateLimitNote = ownerUser
     ? 'The person asking is the bot owner and has no rate limits.'
-    : `Non-owner users share a rate limit of ${HOURLY_MAX} AI requests/hour (across all AI commands) with a ${COOLDOWN_MS / 1000}s cooldown between requests.`;
+    : `Non-owner users share ${HOURLY_MAX} AI credits/hour (cost depends on model) across all AI commands, with a ${COOLDOWN_MS / 1000}s cooldown between requests. Gemini models also share a global ${GLOBAL_GEMINI_DAILY_MAX}/day cap.`;
 
   const modeInstructions = {
     chat: 'You are a sharp, helpful AI assistant embedded in a Discord bot. Be conversational and natural.',
@@ -809,8 +992,10 @@ module.exports = {
   MODEL_NAME,
   HOURLY_MAX,
   COOLDOWN_MS,
+  GLOBAL_GEMINI_DAILY_MAX,
   AI_PROVIDERS,
   PROVIDER_MODELS,
+  MODEL_CREDIT_COST,
   DEFAULT_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
 
@@ -822,12 +1007,18 @@ module.exports = {
   resetUserAISelection,
   getEffectiveAISelection,
   listModelsForProvider,
+  getModelCreditCost,
+  getGlobalGeminiUsage,
+  checkGlobalProviderLimit,
 
   // Rate limiting
   isOwner,
   checkRateLimit,
+  checkRateLimitForSelection,
   consumeRateLimit,
+  consumeRateLimitForSelection,
   remainingUses,
+  remainingCredits,
 
   // Ban management
   banUser,
