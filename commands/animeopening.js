@@ -6,8 +6,13 @@ const { userInstallConfig } = require('../utils/commandConfig');
 
 const ANIMETHEMES_API = 'https://api.animethemes.moe';
 const ANIMETHEMES_GRAPHQL_ENDPOINTS = [
+  'https://graphql.animethemes.moe/graphql',
+  'https://graphql.animethemes.moe/graphql/',
   'https://graphql.animethemes.moe',
+  'https://graphql.animethemes.moe/',
   'https://api.animethemes.moe/graphql',
+  'https://api.animethemes.moe/graphql/',
+  'https://api.animethemes.moe/api/graphql',
 ];
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
 const REQUEST_HEADERS = {
@@ -37,10 +42,15 @@ function getAnimeResults(payload) {
 function extractAnimeFromGraphQLPayload(payload) {
   const data = payload?.data ?? {};
 
+  if (Array.isArray(data?.anime?.data)) return data.anime.data;
+  if (data?.anime?.data && typeof data.anime.data === 'object') return [data.anime.data];
+  if (Array.isArray(data?.searchAnime?.data)) return data.searchAnime.data;
   if (Array.isArray(data?.anime)) return data.anime;
   if (Array.isArray(data?.anime?.nodes)) return data.anime.nodes;
   if (Array.isArray(data?.searchAnime)) return data.searchAnime;
   if (Array.isArray(data?.searchAnime?.nodes)) return data.searchAnime.nodes;
+  if (Array.isArray(data?.anime?.edges)) return data.anime.edges.map((e) => e?.node).filter(Boolean);
+  if (Array.isArray(data?.searchAnime?.edges)) return data.searchAnime.edges.map((e) => e?.node).filter(Boolean);
 
   return [];
 }
@@ -115,6 +125,77 @@ async function searchAnimeGraphQL(title) {
         }
       }
     `,
+    `
+      query SearchAnime($search: String!) {
+        anime(search: $search, limit: 1) {
+          data {
+            name
+            slug
+            images { link }
+            animethemes {
+              type
+              sequence
+              song {
+                title
+                artists { name }
+              }
+              animethemeentries {
+                episodes
+                videos { link }
+              }
+            }
+          }
+        }
+      }
+    `,
+    `
+      query SearchAnime($search: String!) {
+        searchAnime(search: $search, first: 1) {
+          nodes {
+            name
+            slug
+            images { link }
+            animethemes {
+              type
+              sequence
+              song {
+                title
+                artists { name }
+              }
+              animethemeentries {
+                episodes
+                videos { link }
+              }
+            }
+          }
+        }
+      }
+    `,
+    `
+      query SearchAnime($search: String!) {
+        anime(search: $search) {
+          edges {
+            node {
+              name
+              slug
+              images { link }
+              animethemes {
+                type
+                sequence
+                song {
+                  title
+                  artists { name }
+                }
+                animethemeentries {
+                  episodes
+                  videos { link }
+                }
+              }
+            }
+          }
+        }
+      }
+    `,
   ];
 
   let lastError = null;
@@ -141,18 +222,22 @@ async function searchAnimeGraphQL(title) {
 }
 
 async function searchAnimeRest(title) {
-  const attempts = [
-    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos`,
-    `${ANIMETHEMES_API}/anime?filter[name]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos`,
-    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1`,
-  ];
+  const normalizedNeedle = String(title).trim().toLowerCase();
+  const includes = 'images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos';
 
   let lastError = null;
-  for (const searchUrl of attempts) {
+  for (let page = 1; page <= 3; page += 1) {
+    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=25&page[number]=${page}&include=${includes}`;
     try {
       const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
-      const anime = getAnimeResults(payload)[0] ?? null;
-      if (anime) return anime;
+      const animeList = getAnimeResults(payload);
+      const exact = animeList.find((item) => String(item?.name ?? '').toLowerCase() === normalizedNeedle);
+      if (exact) return exact;
+
+      const partial = animeList.find((item) => String(item?.name ?? '').toLowerCase().includes(normalizedNeedle));
+      if (partial) return partial;
+
+      if (animeList.length === 0) break;
     } catch (err) {
       lastError = err;
     }
