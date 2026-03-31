@@ -715,6 +715,39 @@ function getGeminiRateLimitInfo(err) {
   };
 }
 
+function getContentFilterInfo(err) {
+  if (!err || typeof err !== 'object') return null;
+
+  const code = String(err.code ?? '').toLowerCase();
+  const status = Number(err.status);
+  const param = String(err.param ?? '').toLowerCase();
+  const message = String(err.message ?? '');
+
+  const inner = err.innererror && typeof err.innererror === 'object'
+    ? err.innererror
+    : (err.error && err.error.innererror && typeof err.error.innererror === 'object' ? err.error.innererror : null);
+  const innerCode = String(inner?.code ?? '').toLowerCase();
+
+  const looksFiltered =
+    code === 'content_filter' ||
+    innerCode === 'responsibleaipolicyviolation' ||
+    /content management policy|response was filtered|content filtered|responsible ai/i.test(message);
+
+  if (!looksFiltered) return null;
+
+  const providerHint = /azure|openai/i.test(message)
+    ? 'This model/provider blocked the response due to safety policy.'
+    : 'The response was blocked by the model safety filter.';
+
+  return {
+    code: code || innerCode || 'content_filter',
+    status: Number.isFinite(status) ? status : null,
+    param: param || null,
+    message,
+    userMessage: `${providerHint} Try rewording your prompt, resetting chat context, or switching models.`,
+  };
+}
+
 // ─── Provider callers ─────────────────────────────────────────────────────────
 function historyText(historyEntry) {
   if (!historyEntry?.parts || !Array.isArray(historyEntry.parts)) return '';
@@ -1047,6 +1080,7 @@ module.exports = {
   splitMessage,
   sendWithRetry,
   getGeminiRateLimitInfo,
+  getContentFilterInfo,
   callAI,
   callAIWithTools,
   buildSystemInstruction,

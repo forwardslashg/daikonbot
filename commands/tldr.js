@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, InteractionContextType } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, InteractionContextType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -8,7 +8,23 @@ const {
   sendWithRetry,
   callAI,
   buildSystemInstruction,
+  getContentFilterInfo,
 } = require('../utils/aiEngine');
+
+function makeRecoveryButtons(userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ai_newtopic:${userId}`)
+      .setLabel('Reset chat')
+      .setEmoji('🗑️')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`ai_switchmodel:${userId}`)
+      .setLabel('Switch model')
+      .setEmoji('🔁')
+      .setStyle(ButtonStyle.Primary),
+  );
+}
 
 // Fetch up to N recent messages from a channel (returns formatted string)
 async function fetchMessages(interaction, count) {
@@ -107,7 +123,15 @@ module.exports = {
       );
     } catch (err) {
       console.error('[tldr]', err);
-      await interaction.editReply('Failed to generate a summary. Try again later.').catch(() => {});
+      const filtered = getContentFilterInfo(err);
+      const msg = filtered
+        ? filtered.userMessage
+        : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
+      await interaction.editReply({
+        content: msg,
+        embeds: [],
+        components: [makeRecoveryButtons(userId)],
+      }).catch(() => {});
     }
   },
 };

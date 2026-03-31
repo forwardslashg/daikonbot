@@ -25,9 +25,12 @@ const {
   splitMessage,
   sendWithRetry,
   getGeminiRateLimitInfo,
+  getContentFilterInfo,
   callAIWithTools,
   buildSystemInstruction,
   getEffectiveAISelection,
+  setUserAISelection,
+  PROVIDER_MODELS,
 } = require('../utils/aiEngine');
 const {
   getAniListUsername,
@@ -54,6 +57,7 @@ const BTN_NEWTOPIC = (uid) => `ai_newtopic:${uid}`;
 const BTN_SUMMARY = (uid) => `ai_summary:${uid}`;
 const BTN_ANILIST_PROFILE = (uid) => `ai_anilist_profile:${uid}`;
 const BTN_ANILIST_RECS = (uid) => `ai_anilist_recs:${uid}`;
+const BTN_SWITCHMODEL = (uid) => `ai_switchmodel:${uid}`;
 
 const MODAL_FOLLOWUP_ID = (uid) => `ai_modal_followup:${uid}`;
 const MODAL_ANILIST_ID = (uid, mode) => `ai_modal_anilist:${uid}:${mode}`;
@@ -122,6 +126,40 @@ const AI_TOOLS = [
 
 function makeButtons(userId, turnCount) {
   return makeButtonsWithContext(userId, turnCount);
+}
+
+function makeRecoveryButtons(userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(BTN_NEWTOPIC(userId))
+      .setLabel('Reset chat')
+      .setEmoji('🗑️')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(BTN_SWITCHMODEL(userId))
+      .setLabel('Switch model')
+      .setEmoji('🔁')
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function getNextModelSelection(userId) {
+  const all = [];
+  for (const [provider, models] of Object.entries(PROVIDER_MODELS)) {
+    for (const model of models) {
+      all.push({ provider, model });
+    }
+  }
+
+  if (!all.length) {
+    throw new Error('No AI models are configured.');
+  }
+
+  const current = getEffectiveAISelection(userId);
+  const idx = all.findIndex((m) => m.provider === current.provider && m.model === current.model);
+  const next = all[idx >= 0 ? (idx + 1) % all.length : 0];
+  setUserAISelection(userId, next.provider, next.model);
+  return { previous: current, next };
 }
 
 function makeButtonsWithContext(
@@ -505,12 +543,25 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     }
   } catch (err) {
     const gemini = getGeminiRateLimitInfo(err);
+    const filtered = getContentFilterInfo(err);
     console.error('[AI chat]', err);
     const method = interaction.deferred || interaction.replied ? 'editReply' : 'reply';
     const message = gemini
       ? `Gemini is still rate-limiting this request. Please try again in about ${gemini.retryDelaySeconds}s.`
-      : 'Failed to get a response from the AI. Please try again later.';
-    await interaction[method]({ content: message, ephemeral: true }).catch(() => {});
+      : filtered
+        ? filtered.userMessage
+        : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
+
+    const payload = {
+      content: message,
+      components: [makeRecoveryButtons(userId)],
+    };
+
+    if (method === 'reply') {
+      await interaction.reply({ ...payload, ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.editReply(payload).catch(() => {});
+    }
   }
 }
 
@@ -628,6 +679,22 @@ async function handleButton(interaction) {
   if (action === 'ai_newtopic') {
     clearSession(targetUserId);
     await interaction.reply({ content: '-# Conversation cleared. Start a new one with `/ai`.', ephemeral: true });
+    return;
+  }
+
+  if (action === 'ai_switchmodel') {
+    try {
+      const { previous, next } = getNextModelSelection(targetUserId);
+      await interaction.reply({
+        content: `Switched model from \`${previous.provider}:${previous.model}\` to \`${next.provider}:${next.model}\`. Retry your prompt now.`,
+        ephemeral: true,
+      });
+    } catch (err) {
+      await interaction.reply({
+        content: `Could not switch model: ${err?.message || 'unknown error'}`,
+        ephemeral: true,
+      });
+    }
     return;
   }
 }

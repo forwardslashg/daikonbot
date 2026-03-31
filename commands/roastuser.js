@@ -1,4 +1,4 @@
-const { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder } = require('discord.js');
+const { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -8,7 +8,23 @@ const {
   sendWithRetry,
   callAI,
   buildSystemInstruction,
+  getContentFilterInfo,
 } = require('../utils/aiEngine');
+
+function makeRecoveryButtons(userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ai_newtopic:${userId}`)
+      .setLabel('Reset chat')
+      .setEmoji('🗑️')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`ai_switchmodel:${userId}`)
+      .setLabel('Switch model')
+      .setEmoji('🔁')
+      .setStyle(ButtonStyle.Primary),
+  );
+}
 
 module.exports = {
   data: new ContextMenuCommandBuilder()
@@ -79,7 +95,15 @@ module.exports = {
       );
     } catch (err) {
       console.error('[roast ctx]', err);
-      await interaction.editReply('Failed to generate a roast. Try again later.').catch(() => {});
+      const filtered = getContentFilterInfo(err);
+      const msg = filtered
+        ? filtered.userMessage
+        : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
+      await interaction.editReply({
+        content: msg,
+        embeds: [],
+        components: [makeRecoveryButtons(userId)],
+      }).catch(() => {});
     }
   },
 };
