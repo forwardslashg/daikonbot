@@ -5,12 +5,17 @@ const {
 const { userInstallConfig } = require('../utils/commandConfig');
 
 const ANIMETHEMES_API = 'https://api.animethemes.moe';
+const ANIMETHEMES_GRAPHQL = 'https://api.animethemes.moe/graphql';
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
+const REQUEST_HEADERS = {
+  Accept: 'application/json',
+  'Content-Type': 'application/json',
+  'User-Agent': 'DaikonBot/1.0 (+https://github.com/forwardslashg/daikonbot)',
+  Referer: 'https://animethemes.moe/',
+};
 
-async function fetchJson(url) {
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json' },
-  });
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options);
 
   if (!res.ok) {
     throw new Error(`API request failed (${res.status})`);
@@ -23,6 +28,102 @@ function getAnimeResults(payload) {
   if (Array.isArray(payload?.anime)) return payload.anime;
   if (Array.isArray(payload?.data)) return payload.data;
   return [];
+}
+
+function extractAnimeFromGraphQLPayload(payload) {
+  const data = payload?.data ?? {};
+
+  if (Array.isArray(data?.anime)) return data.anime;
+  if (Array.isArray(data?.anime?.nodes)) return data.anime.nodes;
+  if (Array.isArray(data?.searchAnime)) return data.searchAnime;
+  if (Array.isArray(data?.searchAnime?.nodes)) return data.searchAnime.nodes;
+
+  return [];
+}
+
+async function postGraphQL(query, variables) {
+  return fetchJson(ANIMETHEMES_GRAPHQL, {
+    method: 'POST',
+    headers: REQUEST_HEADERS,
+    body: JSON.stringify({ query, variables }),
+  });
+}
+
+async function searchAnimeGraphQL(title) {
+  const queries = [
+    `
+      query SearchAnime($search: String!) {
+        anime(search: $search, first: 1) {
+          nodes {
+            name
+            slug
+            images { link }
+            animethemes {
+              type
+              sequence
+              song {
+                title
+                artists { name }
+              }
+              animethemeentries {
+                episodes
+                videos { link }
+              }
+            }
+          }
+        }
+      }
+    `,
+    `
+      query SearchAnime($search: String!) {
+        anime(search: $search, first: 1) {
+          name
+          slug
+          images { link }
+          animethemes {
+            type
+            sequence
+            song {
+              title
+              artists { name }
+            }
+            animethemeentries {
+              episodes
+              videos { link }
+            }
+          }
+        }
+      }
+    `,
+  ];
+
+  let lastError = null;
+  for (const query of queries) {
+    try {
+      const payload = await postGraphQL(query, { search: title });
+
+      if (Array.isArray(payload?.errors) && payload.errors.length) {
+        lastError = new Error(payload.errors.map((e) => e?.message).filter(Boolean).join(' | ') || 'GraphQL query failed.');
+        continue;
+      }
+
+      const anime = extractAnimeFromGraphQLPayload(payload)[0];
+      if (anime) return anime;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (lastError) throw lastError;
+  return null;
+}
+
+async function searchAnimeRest(title) {
+  const searchUrl = `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes.song.artists,animethemes.animethemeentries.videos`;
+  const payload = await fetchJson(searchUrl, {
+    headers: REQUEST_HEADERS,
+  });
+  return getAnimeResults(payload)[0] ?? null;
 }
 
 function normalizeThemeType(rawType) {
@@ -130,9 +231,16 @@ module.exports = {
     const includeLinks = interaction.options.getBoolean('links') ?? true;
 
     try {
-      const searchUrl = `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes.song.artists,animethemes.animethemeentries.videos`;
-      const search = await fetchJson(searchUrl);
-      const anime = getAnimeResults(search)[0];
+      let anime = null;
+      try {
+        anime = await searchAnimeGraphQL(title);
+      } catch (graphqlErr) {
+        console.warn('[animethemes] GraphQL lookup failed, falling back to REST:', graphqlErr?.message || graphqlErr);
+      }
+
+      if (!anime) {
+        anime = await searchAnimeRest(title);
+      }
 
       if (!anime) {
         await interaction.editReply(`No anime found for \`${title}\`.`);
