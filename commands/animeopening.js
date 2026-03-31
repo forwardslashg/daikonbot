@@ -1,11 +1,11 @@
 const {
   SlashCommandBuilder,
   EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
+
+const ANIMETHEMES_API = 'https://api.animethemes.moe';
+const ANIMETHEMES_SITE = 'https://animethemes.moe';
 
 async function fetchJson(url) {
   const res = await fetch(url, {
@@ -19,22 +19,82 @@ async function fetchJson(url) {
   return res.json();
 }
 
-function extractThemeTitle(themeLine) {
-  const quoted = String(themeLine).match(/"([^"]+)"/);
-  if (quoted?.[1]) return quoted[1];
-  return String(themeLine).replace(/\s+by\s+.+$/i, '').trim();
+function getAnimeResults(payload) {
+  if (Array.isArray(payload?.anime)) return payload.anime;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
 }
 
-function buildYouTubeSearchUrl(animeTitle, themeLine, type) {
-  const themeTitle = extractThemeTitle(themeLine);
-  const query = `${animeTitle} ${themeTitle} ${type === 'endings' ? 'ending' : 'opening'} full`;
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+function normalizeThemeType(rawType) {
+  const value = String(rawType ?? '').toUpperCase();
+  if (value.startsWith('ED')) return 'endings';
+  if (value.startsWith('OP')) return 'openings';
+  return null;
+}
+
+function themeDisplayLabel(theme, fallbackIndex = 1) {
+  const kind = normalizeThemeType(theme?.type) === 'endings' ? 'ED' : 'OP';
+  const seq = Number.isInteger(theme?.sequence) && theme.sequence > 0
+    ? theme.sequence
+    : fallbackIndex;
+  return `${kind} ${seq}`;
+}
+
+function firstVideoLink(theme) {
+  const entries = Array.isArray(theme?.animethemeentries) ? theme.animethemeentries : [];
+  for (const entry of entries) {
+    const videos = Array.isArray(entry?.videos) ? entry.videos : [];
+    for (const video of videos) {
+      if (typeof video?.link === 'string' && video.link.trim()) {
+        return video.link.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function extractThemeItems(anime, requestedType) {
+  const rawThemes = Array.isArray(anime?.animethemes) ? anime.animethemes : [];
+  const items = [];
+
+  let openingCount = 0;
+  let endingCount = 0;
+
+  for (const theme of rawThemes) {
+    const type = normalizeThemeType(theme?.type);
+    if (!type) continue;
+    if (requestedType !== 'both' && requestedType !== type) continue;
+
+    if (type === 'openings') openingCount += 1;
+    if (type === 'endings') endingCount += 1;
+
+    const fallbackIndex = type === 'openings' ? openingCount : endingCount;
+    const songTitle = theme?.song?.title || 'Unknown title';
+    const artists = Array.isArray(theme?.song?.artists)
+      ? theme.song.artists.map((artist) => artist?.name).filter(Boolean)
+      : [];
+    const artistText = artists.length ? artists.join(', ') : null;
+    const episodes = Array.isArray(theme?.animethemeentries)
+      ? theme.animethemeentries.map((entry) => entry?.episodes).filter(Boolean)[0]
+      : null;
+
+    items.push({
+      type,
+      label: themeDisplayLabel(theme, fallbackIndex),
+      songTitle,
+      artistText,
+      episodes,
+      videoLink: firstVideoLink(theme),
+    });
+  }
+
+  return items;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('animeopening')
-    .setDescription('Find opening/ending themes for an anime')
+    .setName('animethemes')
+    .setDescription('Find anime opening/ending themes and direct video links')
     .addStringOption((opt) =>
       opt
         .setName('title')
@@ -56,7 +116,7 @@ module.exports = {
     .addBooleanOption((opt) =>
       opt
         .setName('links')
-        .setDescription('Include YouTube search links for themes')
+        .setDescription('Include direct AnimeThemes video links')
         .setRequired(false),
     )
     .setIntegrationTypes(userInstallConfig.integrationTypes)
@@ -70,91 +130,71 @@ module.exports = {
     const includeLinks = interaction.options.getBoolean('links') ?? true;
 
     try {
-      const searchUrl = `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&limit=1`;
+      const searchUrl = `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes.song.artists,animethemes.animethemeentries.videos`;
       const search = await fetchJson(searchUrl);
-      const anime = search?.data?.[0];
+      const anime = getAnimeResults(search)[0];
 
       if (!anime) {
         await interaction.editReply(`No anime found for \`${title}\`.`);
         return;
       }
 
-      const themes = await fetchJson(`https://api.jikan.moe/v4/anime/${anime.mal_id}/themes`);
-      const openings = themes?.data?.openings ?? [];
-      const endings = themes?.data?.endings ?? [];
+      const themeItems = extractThemeItems(anime, type);
+      const lines = themeItems
+        .slice(0, 12)
+        .map((item) => {
+          const parts = [`**${item.label}:** ${item.songTitle}`];
+          if (item.artistText) parts.push(`by ${item.artistText}`);
+          if (item.episodes) parts.push(`(${item.episodes})`);
+          return parts.join(' ');
+        });
 
-      let lines = [];
-      if (type === 'openings' || type === 'both') {
-        lines = lines.concat(openings.slice(0, 10).map((item, i) => `**OP ${i + 1}:** ${item}`));
-      }
-      if (type === 'endings' || type === 'both') {
-        lines = lines.concat(endings.slice(0, 10).map((item, i) => `**ED ${i + 1}:** ${item}`));
-      }
+      const animeName = anime?.name || anime?.title || title;
+      const animeUrl = anime?.slug ? `${ANIMETHEMES_SITE}/anime/${anime.slug}` : ANIMETHEMES_SITE;
 
       if (!lines.length) {
-        await interaction.editReply(`I found **${anime.title}**, but no ${type === 'both' ? 'theme' : type} data was available.`);
+        await interaction.editReply(`I found **${animeName}**, but no ${type === 'both' ? 'theme' : type} data was available.`);
         return;
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`Anime Themes: ${anime.title}`)
-        .setURL(anime.url)
+        .setTitle(`Anime Themes: ${animeName}`)
+        .setURL(animeUrl)
         .setDescription(lines.join('\n').slice(0, 4000))
         .setColor(0x22c55e)
-        .setFooter({ text: 'Data from Jikan (MyAnimeList)' });
+        .setFooter({ text: 'Data from AnimeThemes.moe' });
 
       if (includeLinks) {
-        const linkLines = [];
-        if (type === 'openings' || type === 'both') {
-          linkLines.push(
-            ...openings.slice(0, 3).map((theme, i) =>
-              `[OP ${i + 1}](${buildYouTubeSearchUrl(anime.title, theme, 'openings')})`,
-            ),
-          );
-        }
-        if (type === 'endings' || type === 'both') {
-          linkLines.push(
-            ...endings.slice(0, 3).map((theme, i) =>
-              `[ED ${i + 1}](${buildYouTubeSearchUrl(anime.title, theme, 'endings')})`,
-            ),
-          );
-        }
+        const linkLines = themeItems
+          .filter((item) => Boolean(item.videoLink))
+          .slice(0, 5)
+          .map((item) => `[${item.label} video](${item.videoLink})`);
+
         if (linkLines.length) {
           embed.addFields({
-            name: 'Watch / Clip Links',
+            name: 'Video Links',
             value: linkLines.join(' • ').slice(0, 1024),
           });
         }
       }
 
-      if (anime.images?.jpg?.image_url) {
-        embed.setThumbnail(anime.images.jpg.image_url);
+      const imageUrl = Array.isArray(anime?.images)
+        ? anime.images.map((img) => img?.link).find(Boolean)
+        : null;
+      if (imageUrl) {
+        embed.setThumbnail(imageUrl);
       }
 
-      let components = [];
-      if (includeLinks) {
-        const primaryTheme =
-          (type === 'endings' ? endings[0] : openings[0]) || openings[0] || endings[0];
-        if (primaryTheme) {
-          const url = buildYouTubeSearchUrl(
-            anime.title,
-            primaryTheme,
-            type === 'endings' ? 'endings' : 'openings',
-          );
-          components = [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setStyle(ButtonStyle.Link)
-                .setLabel(type === 'endings' ? 'Find Ending Clip' : 'Find Opening Clip')
-                .setURL(url),
-            ),
-          ];
-        }
-      }
+      const primaryVideo = includeLinks
+        ? themeItems.map((item) => item.videoLink).find(Boolean)
+        : null;
 
-      await interaction.editReply({ embeds: [embed], components });
+      await interaction.editReply({
+        content: primaryVideo ? `Featured theme video: ${primaryVideo}` : undefined,
+        embeds: [embed],
+      });
     } catch (err) {
-      console.error('[animeopening]', err);
+      console.error('[animethemes]', err);
       await interaction.editReply('Failed to fetch anime themes right now. Try again in a moment.');
     }
   },

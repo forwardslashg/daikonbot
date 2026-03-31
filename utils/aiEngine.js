@@ -30,8 +30,15 @@ const PROVIDER_MODELS = {
     'deepseek-r1-distill-llama-70b',
   ],
   [AI_PROVIDERS.GITHUB_MODELS]: [
+    'openai/gpt-4.1',
     'openai/gpt-4.1-mini',
+    'openai/gpt-4.1-nano',
+    'openai/gpt-4o',
     'openai/gpt-4o-mini',
+    'openai/gpt-5',
+    'openai/gpt-5-chat',
+    'openai/gpt-5-mini',
+    'openai/gpt-5-nano',
     'meta/llama-3.3-70b-instruct',
   ],
 };
@@ -42,8 +49,15 @@ const MODEL_CREDIT_COST = {
   'llama-3.3-70b-versatile': 2,
   'llama-3.1-8b-instant': 1,
   'deepseek-r1-distill-llama-70b': 2,
+  'openai/gpt-4.1': 3,
   'openai/gpt-4.1-mini': 2,
+  'openai/gpt-4.1-nano': 1,
+  'openai/gpt-4o': 3,
   'openai/gpt-4o-mini': 2,
+  'openai/gpt-5': 4,
+  'openai/gpt-5-chat': 3,
+  'openai/gpt-5-mini': 2,
+  'openai/gpt-5-nano': 1,
   'meta/llama-3.3-70b-instruct': 2,
 };
 
