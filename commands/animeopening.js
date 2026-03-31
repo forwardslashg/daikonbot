@@ -5,7 +5,10 @@ const {
 const { userInstallConfig } = require('../utils/commandConfig');
 
 const ANIMETHEMES_API = 'https://api.animethemes.moe';
-const ANIMETHEMES_GRAPHQL = 'https://api.animethemes.moe/graphql';
+const ANIMETHEMES_GRAPHQL_ENDPOINTS = [
+  'https://graphql.animethemes.moe',
+  'https://api.animethemes.moe/graphql',
+];
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
 const REQUEST_HEADERS = {
   Accept: 'application/json',
@@ -18,7 +21,8 @@ async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
 
   if (!res.ok) {
-    throw new Error(`API request failed (${res.status})`);
+    const body = await res.text().catch(() => '');
+    throw new Error(`API request failed (${res.status}): ${body.slice(0, 500)}`);
   }
 
   return res.json();
@@ -41,12 +45,28 @@ function extractAnimeFromGraphQLPayload(payload) {
   return [];
 }
 
-async function postGraphQL(query, variables) {
-  return fetchJson(ANIMETHEMES_GRAPHQL, {
-    method: 'POST',
-    headers: REQUEST_HEADERS,
-    body: JSON.stringify({ query, variables }),
-  });
+async function postGraphQL(endpoint, query, variables) {
+  try {
+    return await fetchJson(endpoint, {
+      method: 'POST',
+      headers: REQUEST_HEADERS,
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch (err) {
+    if (!String(err?.message ?? '').includes('(405)')) {
+      throw err;
+    }
+
+    // Some GraphQL gateways only allow GET for simple operations.
+    const params = new URLSearchParams({
+      query,
+      variables: JSON.stringify(variables ?? {}),
+    });
+    return fetchJson(`${endpoint}?${params.toString()}`, {
+      method: 'GET',
+      headers: REQUEST_HEADERS,
+    });
+  }
 }
 
 async function searchAnimeGraphQL(title) {
@@ -98,19 +118,21 @@ async function searchAnimeGraphQL(title) {
   ];
 
   let lastError = null;
-  for (const query of queries) {
-    try {
-      const payload = await postGraphQL(query, { search: title });
+  for (const endpoint of ANIMETHEMES_GRAPHQL_ENDPOINTS) {
+    for (const query of queries) {
+      try {
+        const payload = await postGraphQL(endpoint, query, { search: title });
 
-      if (Array.isArray(payload?.errors) && payload.errors.length) {
-        lastError = new Error(payload.errors.map((e) => e?.message).filter(Boolean).join(' | ') || 'GraphQL query failed.');
-        continue;
+        if (Array.isArray(payload?.errors) && payload.errors.length) {
+          lastError = new Error(payload.errors.map((e) => e?.message).filter(Boolean).join(' | ') || 'GraphQL query failed.');
+          continue;
+        }
+
+        const anime = extractAnimeFromGraphQLPayload(payload)[0];
+        if (anime) return anime;
+      } catch (err) {
+        lastError = err;
       }
-
-      const anime = extractAnimeFromGraphQLPayload(payload)[0];
-      if (anime) return anime;
-    } catch (err) {
-      lastError = err;
     }
   }
 
@@ -119,11 +141,25 @@ async function searchAnimeGraphQL(title) {
 }
 
 async function searchAnimeRest(title) {
-  const searchUrl = `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes.song.artists,animethemes.animethemeentries.videos`;
-  const payload = await fetchJson(searchUrl, {
-    headers: REQUEST_HEADERS,
-  });
-  return getAnimeResults(payload)[0] ?? null;
+  const attempts = [
+    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos`,
+    `${ANIMETHEMES_API}/anime?filter[name]=${encodeURIComponent(title)}&page[size]=1&include=images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos`,
+    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(title)}&page[size]=1`,
+  ];
+
+  let lastError = null;
+  for (const searchUrl of attempts) {
+    try {
+      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
+      const anime = getAnimeResults(payload)[0] ?? null;
+      if (anime) return anime;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (lastError) throw lastError;
+  return null;
 }
 
 function normalizeThemeType(rawType) {
