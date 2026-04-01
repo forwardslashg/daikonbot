@@ -221,6 +221,7 @@ async function gatherAnimeCandidates(title) {
   ];
 
   const ranked = [];
+  let insertionOrder = 0;
 
   for (const baseUrl of queryCandidates) {
     const url = `${baseUrl}&page[number]=1`;
@@ -230,25 +231,61 @@ async function gatherAnimeCandidates(title) {
 
       const normalizedNeedle = normalizeText(rawTitle);
       const slugNeedle = titleToSlug(rawTitle);
+      const needleParts = normalizedNeedle.split(' ').filter(Boolean);
       for (const anime of animeList) {
-        const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
-        if (score <= 0) continue;
+        const name = animeName(anime);
+        if (!name) continue;
+
+        const directScore = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
+        const normalizedName = normalizeText(name);
+        const overlap = needleParts.length
+          ? needleParts.filter((part) => normalizedName.includes(part)).length
+          : 0;
+        const overlapScore = overlap > 0 ? overlap * 10 : 1;
+        const score = directScore > 0 ? directScore : overlapScore;
+
         ranked.push({
           anime,
           score,
-          name: animeName(anime),
+          order: insertionOrder,
+          name,
           slug: animeSlug(anime),
         });
+        insertionOrder += 1;
       }
     } catch (err) {
       console.warn(`[animethemes] Candidate fetch failed: ${err?.message || err}`);
     }
   }
 
+  // If query/search endpoints return nothing useful, still show a browse page instead of failing.
+  if (!ranked.length) {
+    try {
+      const fallbackUrl = `${ANIMETHEMES_API}/anime?page[size]=30&page[number]=1`;
+      const payload = await fetchJson(fallbackUrl, { headers: REQUEST_HEADERS, timeoutMs: 5000 });
+      const animeList = getAnimeResults(payload);
+      for (const anime of animeList) {
+        const name = animeName(anime);
+        if (!name) continue;
+        ranked.push({
+          anime,
+          score: 1,
+          order: insertionOrder,
+          name,
+          slug: animeSlug(anime),
+        });
+        insertionOrder += 1;
+      }
+      console.info(`[animethemes] Candidate fallback browse list loaded count=${ranked.length}`);
+    } catch (err) {
+      console.warn(`[animethemes] Candidate fallback browse failed: ${err?.message || err}`);
+    }
+  }
+
   const deduped = uniqBy(
     ranked
       .filter((item) => item.name)
-      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)),
+      .sort((a, b) => b.score - a.score || a.order - b.order || a.name.localeCompare(b.name)),
     (item) => item.slug || normalizeText(item.name),
   );
 
