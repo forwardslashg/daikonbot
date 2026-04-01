@@ -139,12 +139,27 @@ function pickBestAnimeMatch(animeList, title) {
   return best;
 }
 
+function pickBestAnimeMatchWithScore(animeList, title) {
+  const normalizedNeedle = normalizeText(title);
+  const slugNeedle = titleToSlug(title);
+  let best = null;
+  let bestScore = 0;
+
+  for (const anime of animeList) {
+    const score = scoreAnimeMatch(anime, title, normalizedNeedle, slugNeedle);
+    if (score > bestScore) {
+      best = anime;
+      bestScore = score;
+    }
+  }
+
+  return { best, bestScore };
+}
+
 async function searchAnimeRest(title) {
   const rawTitle = String(title ?? '').trim();
   const slug = titleToSlug(rawTitle);
   const includes = 'images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos';
-  const startedAt = Date.now();
-  const hardDeadlineMs = 20000;
 
   console.info(`[animethemes] REST search start title="${rawTitle}" slug="${slug}"`);
 
@@ -166,20 +181,17 @@ async function searchAnimeRest(title) {
 
   let lastError = null;
   for (const searchUrl of queryCandidates) {
-    if (Date.now() - startedAt > hardDeadlineMs) {
-      console.warn('[animethemes] Search deadline reached during query candidates.');
-      break;
-    }
-
     try {
       console.info(`[animethemes] Query candidate: ${searchUrl}`);
       const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS, timeoutMs: 7000 });
       const animeList = getAnimeResults(payload);
-      const best = pickBestAnimeMatch(animeList, rawTitle);
+      const { best, bestScore } = pickBestAnimeMatchWithScore(animeList, rawTitle);
       if (best) {
         const bestSlug = animeSlug(best);
-        console.info(`[animethemes] Query match found name="${animeName(best)}" slug="${bestSlug}"`);
-        if (bestSlug) {
+        console.info(`[animethemes] Query match found name="${animeName(best)}" slug="${bestSlug}" score=${bestScore}`);
+
+        // Only auto-resolve on strong matches. Otherwise we let the picker handle disambiguation.
+        if (bestScore >= 110 && bestSlug) {
           try {
             const hydrated = await fetchAnimeBySlug(bestSlug, includes);
             if (hydrated) return hydrated;
@@ -187,7 +199,8 @@ async function searchAnimeRest(title) {
             console.info(`[animethemes] Hydration by slug failed for ${bestSlug}: ${err?.message || err}`);
           }
         }
-        return best;
+
+        if (bestScore >= 110) return best;
       }
     } catch (err) {
       console.warn(`[animethemes] Query candidate failed: ${err?.message || err}`);
@@ -195,69 +208,13 @@ async function searchAnimeRest(title) {
     }
   }
 
-  // Final fallback: scan catalog pages without heavy includes, then hydrate one match.
-  let bestOverall = null;
-  let bestOverallScore = 0;
-  for (let page = 1; page <= 40; page += 1) {
-    if (Date.now() - startedAt > hardDeadlineMs) {
-      console.warn(`[animethemes] Search deadline reached while scanning page ${page}.`);
-      break;
-    }
-
-    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=100&page[number]=${page}`;
-    try {
-      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS, timeoutMs: 7000 });
-      const animeList = getAnimeResults(payload);
-      if (!animeList.length) break;
-
-      const normalizedNeedle = normalizeText(rawTitle);
-      const slugNeedle = titleToSlug(rawTitle);
-      for (const anime of animeList) {
-        const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
-        if (score > bestOverallScore) {
-          bestOverall = anime;
-          bestOverallScore = score;
-        }
-      }
-
-      if (bestOverallScore >= 110) {
-        const quickSlug = animeSlug(bestOverall);
-        if (quickSlug) {
-          const hydrated = await fetchAnimeBySlug(quickSlug, includes).catch(() => null);
-          if (hydrated) return hydrated;
-        }
-        return bestOverall;
-      }
-    } catch (err) {
-      console.warn(`[animethemes] Paged scan failed on page ${page}: ${err?.message || err}`);
-      lastError = err;
-      break;
-    }
-  }
-
-  if (bestOverall && bestOverallScore >= 70) {
-    const finalSlug = animeSlug(bestOverall);
-    console.info(`[animethemes] Returning best fuzzy match score=${bestOverallScore} name="${animeName(bestOverall)}" slug="${finalSlug}"`);
-    if (finalSlug) {
-      try {
-        const hydrated = await fetchAnimeBySlug(finalSlug, includes);
-        if (hydrated) return hydrated;
-      } catch (err) {
-        console.info(`[animethemes] Final hydration failed for ${finalSlug}: ${err?.message || err}`);
-      }
-    }
-    return bestOverall;
-  }
-
-  console.warn(`[animethemes] No anime found after ${Date.now() - startedAt}ms for title="${rawTitle}"`);
+  console.info('[animethemes] No strong direct match found on first-page query results.');
   if (lastError) throw lastError;
   return null;
 }
 
 async function gatherAnimeCandidates(title) {
   const rawTitle = String(title ?? '').trim();
-  const startedAt = Date.now();
-  const maxDurationMs = 12000;
   const queryCandidates = [
     `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&page[size]=30`,
     `${ANIMETHEMES_API}/anime?search=${encodeURIComponent(rawTitle)}&page[size]=30`,
@@ -266,31 +223,25 @@ async function gatherAnimeCandidates(title) {
   const ranked = [];
 
   for (const baseUrl of queryCandidates) {
-    for (let page = 1; page <= 4; page += 1) {
-      if (Date.now() - startedAt > maxDurationMs) break;
+    const url = `${baseUrl}&page[number]=1`;
+    try {
+      const payload = await fetchJson(url, { headers: REQUEST_HEADERS, timeoutMs: 5000 });
+      const animeList = getAnimeResults(payload);
 
-      const url = `${baseUrl}&page[number]=${page}`;
-      try {
-        const payload = await fetchJson(url, { headers: REQUEST_HEADERS, timeoutMs: 5000 });
-        const animeList = getAnimeResults(payload);
-        if (!animeList.length) break;
-
-        const normalizedNeedle = normalizeText(rawTitle);
-        const slugNeedle = titleToSlug(rawTitle);
-        for (const anime of animeList) {
-          const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
-          if (score <= 0) continue;
-          ranked.push({
-            anime,
-            score,
-            name: animeName(anime),
-            slug: animeSlug(anime),
-          });
-        }
-      } catch (err) {
-        console.warn(`[animethemes] Candidate fetch failed: ${err?.message || err}`);
-        break;
+      const normalizedNeedle = normalizeText(rawTitle);
+      const slugNeedle = titleToSlug(rawTitle);
+      for (const anime of animeList) {
+        const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
+        if (score <= 0) continue;
+        ranked.push({
+          anime,
+          score,
+          name: animeName(anime),
+          slug: animeSlug(anime),
+        });
       }
+    } catch (err) {
+      console.warn(`[animethemes] Candidate fetch failed: ${err?.message || err}`);
     }
   }
 
