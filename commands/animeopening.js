@@ -8,11 +8,6 @@ const ANIMETHEMES_API = 'https://api.animethemes.moe';
 const ANIMETHEMES_GRAPHQL_ENDPOINTS = [
   'https://graphql.animethemes.moe/graphql',
   'https://graphql.animethemes.moe/graphql/',
-  'https://graphql.animethemes.moe',
-  'https://graphql.animethemes.moe/',
-  'https://api.animethemes.moe/graphql',
-  'https://api.animethemes.moe/graphql/',
-  'https://api.animethemes.moe/api/graphql',
 ];
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
 const REQUEST_HEADERS = {
@@ -37,6 +32,72 @@ function getAnimeResults(payload) {
   if (Array.isArray(payload?.anime)) return payload.anime;
   if (Array.isArray(payload?.data)) return payload.data;
   return [];
+}
+
+function normalizeText(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function titleToSlug(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+}
+
+function animeName(anime) {
+  return String(anime?.name ?? anime?.title ?? anime?.attributes?.name ?? '').trim();
+}
+
+function animeSlug(anime) {
+  return String(anime?.slug ?? anime?.attributes?.slug ?? '').trim();
+}
+
+function scoreAnimeMatch(anime, title, normalizedNeedle, slugNeedle) {
+  const rawName = animeName(anime);
+  if (!rawName) return 0;
+
+  const normalizedName = normalizeText(rawName);
+  if (!normalizedName) return 0;
+
+  const normalizedTitle = normalizeText(title);
+  const slug = titleToSlug(animeSlug(anime) || rawName);
+
+  if (slugNeedle && slug === slugNeedle) return 120;
+  if (normalizedName === normalizedNeedle) return 110;
+  if (normalizedName === normalizedTitle) return 100;
+  if (normalizedName.startsWith(`${normalizedNeedle} `)) return 90;
+  if (normalizedName.includes(normalizedNeedle)) return 80;
+
+  const needleParts = normalizedNeedle.split(' ').filter(Boolean);
+  if (needleParts.length && needleParts.every((part) => normalizedName.includes(part))) return 70;
+
+  return 0;
+}
+
+function pickBestAnimeMatch(animeList, title) {
+  const normalizedNeedle = normalizeText(title);
+  const slugNeedle = titleToSlug(title);
+  let best = null;
+  let bestScore = 0;
+
+  for (const anime of animeList) {
+    const score = scoreAnimeMatch(anime, title, normalizedNeedle, slugNeedle);
+    if (score > bestScore) {
+      best = anime;
+      bestScore = score;
+    }
+  }
+
+  return best;
 }
 
 function extractAnimeFromGraphQLPayload(payload) {
@@ -222,24 +283,57 @@ async function searchAnimeGraphQL(title) {
 }
 
 async function searchAnimeRest(title) {
-  const normalizedNeedle = String(title).trim().toLowerCase();
+  const rawTitle = String(title ?? '').trim();
+  const slug = titleToSlug(rawTitle);
   const includes = 'images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos';
 
+  // Try direct slug endpoint first. This is usually the fastest and most accurate.
+  if (slug) {
+    try {
+      const slugPayload = await fetchJson(`${ANIMETHEMES_API}/anime/${encodeURIComponent(slug)}?include=${encodeURIComponent(includes)}`, {
+        headers: REQUEST_HEADERS,
+      });
+      const slugAnime = Array.isArray(slugPayload?.anime)
+        ? slugPayload.anime[0]
+        : slugPayload?.anime || slugPayload?.data || null;
+      if (slugAnime) return slugAnime;
+    } catch {
+      // Ignore and continue through other search strategies.
+    }
+  }
+
+  const queryCandidates = [
+    `${ANIMETHEMES_API}/anime?filter[name]=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
+    `${ANIMETHEMES_API}/anime?filter[slug]=${encodeURIComponent(slug)}&include=${encodeURIComponent(includes)}&page[size]=10`,
+    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
+    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
+  ];
+
   let lastError = null;
-  for (let page = 1; page <= 3; page += 1) {
-    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=25&page[number]=${page}&include=${includes}`;
+  for (const searchUrl of queryCandidates) {
     try {
       const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
       const animeList = getAnimeResults(payload);
-      const exact = animeList.find((item) => String(item?.name ?? '').toLowerCase() === normalizedNeedle);
-      if (exact) return exact;
-
-      const partial = animeList.find((item) => String(item?.name ?? '').toLowerCase().includes(normalizedNeedle));
-      if (partial) return partial;
-
-      if (animeList.length === 0) break;
+      const best = pickBestAnimeMatch(animeList, rawTitle);
+      if (best) return best;
     } catch (err) {
       lastError = err;
+    }
+  }
+
+  // Final fallback: scan more catalog pages and pick the best fuzzy match.
+  for (let page = 1; page <= 20; page += 1) {
+    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=25&page[number]=${page}&include=${encodeURIComponent(includes)}`;
+    try {
+      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
+      const animeList = getAnimeResults(payload);
+      if (!animeList.length) break;
+
+      const best = pickBestAnimeMatch(animeList, rawTitle);
+      if (best) return best;
+    } catch (err) {
+      lastError = err;
+      break;
     }
   }
 
@@ -378,16 +472,17 @@ module.exports = {
           return parts.join(' ');
         });
 
-      const animeName = anime?.name || anime?.title || title;
-      const animeUrl = anime?.slug ? `${ANIMETHEMES_SITE}/anime/${anime.slug}` : ANIMETHEMES_SITE;
+      const resolvedAnimeName = animeName(anime) || title;
+      const resolvedAnimeSlug = animeSlug(anime);
+      const animeUrl = resolvedAnimeSlug ? `${ANIMETHEMES_SITE}/anime/${resolvedAnimeSlug}` : ANIMETHEMES_SITE;
 
       if (!lines.length) {
-        await interaction.editReply(`I found **${animeName}**, but no ${type === 'both' ? 'theme' : type} data was available.`);
+        await interaction.editReply(`I found **${resolvedAnimeName}**, but no ${type === 'both' ? 'theme' : type} data was available.`);
         return;
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`Anime Themes: ${animeName}`)
+        .setTitle(`Anime Themes: ${resolvedAnimeName}`)
         .setURL(animeUrl)
         .setDescription(lines.join('\n').slice(0, 4000))
         .setColor(0x22c55e)
@@ -409,6 +504,8 @@ module.exports = {
 
       const imageUrl = Array.isArray(anime?.images)
         ? anime.images.map((img) => img?.link).find(Boolean)
+        : Array.isArray(anime?.attributes?.images)
+          ? anime.attributes.images.map((img) => img?.link).find(Boolean)
         : null;
       if (imageUrl) {
         embed.setThumbnail(imageUrl);
