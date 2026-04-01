@@ -18,7 +18,21 @@ const REQUEST_HEADERS = {
 };
 
 async function fetchJson(url, options = {}) {
-  const res = await fetch(url, options);
+  const { timeoutMs = 8000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(url, { ...fetchOptions, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`API request timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -26,6 +40,18 @@ async function fetchJson(url, options = {}) {
   }
 
   return res.json();
+}
+
+async function fetchAnimeBySlug(slug, includes) {
+  const payload = await fetchJson(
+    `${ANIMETHEMES_API}/anime/${encodeURIComponent(slug)}?include=${encodeURIComponent(includes)}`,
+    { headers: REQUEST_HEADERS, timeoutMs: 9000 },
+  );
+
+  if (Array.isArray(payload?.anime) && payload.anime.length) return payload.anime[0];
+  if (payload?.anime && typeof payload.anime === 'object') return payload.anime;
+  if (payload?.data && typeof payload.data === 'object') return payload.data;
+  return null;
 }
 
 function getAnimeResults(payload) {
@@ -104,55 +130,113 @@ async function searchAnimeRest(title) {
   const rawTitle = String(title ?? '').trim();
   const slug = titleToSlug(rawTitle);
   const includes = 'images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos';
+  const startedAt = Date.now();
+  const hardDeadlineMs = 20000;
+
+  console.info(`[animethemes] REST search start title="${rawTitle}" slug="${slug}"`);
 
   // Try direct slug endpoint first. This is usually the fastest and most accurate.
   if (slug) {
     try {
-      const slugPayload = await fetchJson(`${ANIMETHEMES_API}/anime/${encodeURIComponent(slug)}?include=${encodeURIComponent(includes)}`, {
-        headers: REQUEST_HEADERS,
-      });
-      const slugAnime = Array.isArray(slugPayload?.anime)
-        ? slugPayload.anime[0]
-        : slugPayload?.anime || slugPayload?.data || null;
+      const slugAnime = await fetchAnimeBySlug(slug, includes);
       if (slugAnime) return slugAnime;
+      console.info('[animethemes] Slug lookup returned no anime.');
     } catch {
-      // Ignore and continue through other search strategies.
+      console.info('[animethemes] Slug lookup failed, trying query search.');
     }
   }
 
   const queryCandidates = [
-    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=25`,
-    `${ANIMETHEMES_API}/anime?search=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=25`,
+    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&page[size]=30`,
+    `${ANIMETHEMES_API}/anime?search=${encodeURIComponent(rawTitle)}&page[size]=30`,
   ];
 
   let lastError = null;
   for (const searchUrl of queryCandidates) {
+    if (Date.now() - startedAt > hardDeadlineMs) {
+      console.warn('[animethemes] Search deadline reached during query candidates.');
+      break;
+    }
+
     try {
-      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
+      console.info(`[animethemes] Query candidate: ${searchUrl}`);
+      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS, timeoutMs: 7000 });
       const animeList = getAnimeResults(payload);
       const best = pickBestAnimeMatch(animeList, rawTitle);
-      if (best) return best;
+      if (best) {
+        const bestSlug = animeSlug(best);
+        console.info(`[animethemes] Query match found name="${animeName(best)}" slug="${bestSlug}"`);
+        if (bestSlug) {
+          try {
+            const hydrated = await fetchAnimeBySlug(bestSlug, includes);
+            if (hydrated) return hydrated;
+          } catch (err) {
+            console.info(`[animethemes] Hydration by slug failed for ${bestSlug}: ${err?.message || err}`);
+          }
+        }
+        return best;
+      }
     } catch (err) {
+      console.warn(`[animethemes] Query candidate failed: ${err?.message || err}`);
       lastError = err;
     }
   }
 
-  // Final fallback: scan deeper into the catalog and pick the best fuzzy match.
-  for (let page = 1; page <= 120; page += 1) {
-    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=25&page[number]=${page}&include=${encodeURIComponent(includes)}`;
+  // Final fallback: scan catalog pages without heavy includes, then hydrate one match.
+  let bestOverall = null;
+  let bestOverallScore = 0;
+  for (let page = 1; page <= 40; page += 1) {
+    if (Date.now() - startedAt > hardDeadlineMs) {
+      console.warn(`[animethemes] Search deadline reached while scanning page ${page}.`);
+      break;
+    }
+
+    const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=100&page[number]=${page}`;
     try {
-      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
+      const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS, timeoutMs: 7000 });
       const animeList = getAnimeResults(payload);
       if (!animeList.length) break;
 
-      const best = pickBestAnimeMatch(animeList, rawTitle);
-      if (best) return best;
+      const normalizedNeedle = normalizeText(rawTitle);
+      const slugNeedle = titleToSlug(rawTitle);
+      for (const anime of animeList) {
+        const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
+        if (score > bestOverallScore) {
+          bestOverall = anime;
+          bestOverallScore = score;
+        }
+      }
+
+      if (bestOverallScore >= 110) {
+        const quickSlug = animeSlug(bestOverall);
+        if (quickSlug) {
+          const hydrated = await fetchAnimeBySlug(quickSlug, includes).catch(() => null);
+          if (hydrated) return hydrated;
+        }
+        return bestOverall;
+      }
     } catch (err) {
+      console.warn(`[animethemes] Paged scan failed on page ${page}: ${err?.message || err}`);
       lastError = err;
       break;
     }
   }
 
+  if (bestOverall && bestOverallScore >= 70) {
+    const finalSlug = animeSlug(bestOverall);
+    console.info(`[animethemes] Returning best fuzzy match score=${bestOverallScore} name="${animeName(bestOverall)}" slug="${finalSlug}"`);
+    if (finalSlug) {
+      try {
+        const hydrated = await fetchAnimeBySlug(finalSlug, includes);
+        if (hydrated) return hydrated;
+      } catch (err) {
+        console.info(`[animethemes] Final hydration failed for ${finalSlug}: ${err?.message || err}`);
+      }
+    }
+    return bestOverall;
+  }
+
+  console.warn(`[animethemes] No anime found after ${Date.now() - startedAt}ms for title="${rawTitle}"`);
   if (lastError) throw lastError;
   return null;
 }
@@ -279,12 +363,16 @@ module.exports = {
     const title = interaction.options.getString('title', true).trim();
     const type = interaction.options.getString('type') ?? 'openings';
     const includeLinks = interaction.options.getBoolean('links') ?? true;
+    const startedAt = Date.now();
+
+    console.info(`[animethemes] Command start user=${interaction.user.id} title="${title}" type=${type} includeLinks=${includeLinks}`);
 
     try {
       // GraphQL endpoint behavior has been unstable; use REST for predictable results.
       const anime = await searchAnimeRest(title);
 
       if (!anime) {
+        console.info(`[animethemes] No anime resolved title="${title}" elapsedMs=${Date.now() - startedAt}`);
         await interaction.editReply(`No anime found for \`${title}\`.`);
         return;
       }
@@ -304,6 +392,7 @@ module.exports = {
       const animeUrl = resolvedAnimeSlug ? `${ANIMETHEMES_SITE}/anime/${resolvedAnimeSlug}` : ANIMETHEMES_SITE;
 
       if (!lines.length) {
+        console.info(`[animethemes] Anime resolved but no themes anime="${resolvedAnimeName}" type=${type} elapsedMs=${Date.now() - startedAt}`);
         await interaction.editReply(`I found **${resolvedAnimeName}**, but no ${type === 'both' ? 'theme' : type} data was available.`);
         return;
       }
@@ -328,6 +417,8 @@ module.exports = {
         embeds: [embed],
       });
 
+      console.info(`[animethemes] Embed sent anime="${resolvedAnimeName}" themes=${themeItems.length} elapsedMs=${Date.now() - startedAt}`);
+
       if (!includeLinks) return;
 
       const videoItems = themeItems.filter((item) => Boolean(item.videoLink));
@@ -341,6 +432,8 @@ module.exports = {
         components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length)],
         fetchReply: true,
       });
+
+      console.info(`[animethemes] Link navigator sent links=${videoItems.length} elapsedMs=${Date.now() - startedAt}`);
 
       if (videoItems.length <= 1) return;
 
