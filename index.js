@@ -84,7 +84,7 @@ for (const file of commandFiles) {
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Ready! Logged in as ${client.user.tag}`);
 });
 

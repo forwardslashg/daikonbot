@@ -1,14 +1,14 @@
 const {
   SlashCommandBuilder,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 
 const ANIMETHEMES_API = 'https://api.animethemes.moe';
-const ANIMETHEMES_GRAPHQL_ENDPOINTS = [
-  'https://graphql.animethemes.moe/graphql',
-  'https://graphql.animethemes.moe/graphql/',
-];
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
 const REQUEST_HEADERS = {
   Accept: 'application/json',
@@ -100,188 +100,6 @@ function pickBestAnimeMatch(animeList, title) {
   return best;
 }
 
-function extractAnimeFromGraphQLPayload(payload) {
-  const data = payload?.data ?? {};
-
-  if (Array.isArray(data?.anime?.data)) return data.anime.data;
-  if (data?.anime?.data && typeof data.anime.data === 'object') return [data.anime.data];
-  if (Array.isArray(data?.searchAnime?.data)) return data.searchAnime.data;
-  if (Array.isArray(data?.anime)) return data.anime;
-  if (Array.isArray(data?.anime?.nodes)) return data.anime.nodes;
-  if (Array.isArray(data?.searchAnime)) return data.searchAnime;
-  if (Array.isArray(data?.searchAnime?.nodes)) return data.searchAnime.nodes;
-  if (Array.isArray(data?.anime?.edges)) return data.anime.edges.map((e) => e?.node).filter(Boolean);
-  if (Array.isArray(data?.searchAnime?.edges)) return data.searchAnime.edges.map((e) => e?.node).filter(Boolean);
-
-  return [];
-}
-
-async function postGraphQL(endpoint, query, variables) {
-  try {
-    return await fetchJson(endpoint, {
-      method: 'POST',
-      headers: REQUEST_HEADERS,
-      body: JSON.stringify({ query, variables }),
-    });
-  } catch (err) {
-    if (!String(err?.message ?? '').includes('(405)')) {
-      throw err;
-    }
-
-    // Some GraphQL gateways only allow GET for simple operations.
-    const params = new URLSearchParams({
-      query,
-      variables: JSON.stringify(variables ?? {}),
-    });
-    return fetchJson(`${endpoint}?${params.toString()}`, {
-      method: 'GET',
-      headers: REQUEST_HEADERS,
-    });
-  }
-}
-
-async function searchAnimeGraphQL(title) {
-  const queries = [
-    `
-      query SearchAnime($search: String!) {
-        anime(search: $search, first: 1) {
-          nodes {
-            name
-            slug
-            images { link }
-            animethemes {
-              type
-              sequence
-              song {
-                title
-                artists { name }
-              }
-              animethemeentries {
-                episodes
-                videos { link }
-              }
-            }
-          }
-        }
-      }
-    `,
-    `
-      query SearchAnime($search: String!) {
-        anime(search: $search, first: 1) {
-          name
-          slug
-          images { link }
-          animethemes {
-            type
-            sequence
-            song {
-              title
-              artists { name }
-            }
-            animethemeentries {
-              episodes
-              videos { link }
-            }
-          }
-        }
-      }
-    `,
-    `
-      query SearchAnime($search: String!) {
-        anime(search: $search, limit: 1) {
-          data {
-            name
-            slug
-            images { link }
-            animethemes {
-              type
-              sequence
-              song {
-                title
-                artists { name }
-              }
-              animethemeentries {
-                episodes
-                videos { link }
-              }
-            }
-          }
-        }
-      }
-    `,
-    `
-      query SearchAnime($search: String!) {
-        searchAnime(search: $search, first: 1) {
-          nodes {
-            name
-            slug
-            images { link }
-            animethemes {
-              type
-              sequence
-              song {
-                title
-                artists { name }
-              }
-              animethemeentries {
-                episodes
-                videos { link }
-              }
-            }
-          }
-        }
-      }
-    `,
-    `
-      query SearchAnime($search: String!) {
-        anime(search: $search) {
-          edges {
-            node {
-              name
-              slug
-              images { link }
-              animethemes {
-                type
-                sequence
-                song {
-                  title
-                  artists { name }
-                }
-                animethemeentries {
-                  episodes
-                  videos { link }
-                }
-              }
-            }
-          }
-        }
-      }
-    `,
-  ];
-
-  let lastError = null;
-  for (const endpoint of ANIMETHEMES_GRAPHQL_ENDPOINTS) {
-    for (const query of queries) {
-      try {
-        const payload = await postGraphQL(endpoint, query, { search: title });
-
-        if (Array.isArray(payload?.errors) && payload.errors.length) {
-          lastError = new Error(payload.errors.map((e) => e?.message).filter(Boolean).join(' | ') || 'GraphQL query failed.');
-          continue;
-        }
-
-        const anime = extractAnimeFromGraphQLPayload(payload)[0];
-        if (anime) return anime;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-  }
-
-  if (lastError) throw lastError;
-  return null;
-}
-
 async function searchAnimeRest(title) {
   const rawTitle = String(title ?? '').trim();
   const slug = titleToSlug(rawTitle);
@@ -303,10 +121,8 @@ async function searchAnimeRest(title) {
   }
 
   const queryCandidates = [
-    `${ANIMETHEMES_API}/anime?filter[name]=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
-    `${ANIMETHEMES_API}/anime?filter[slug]=${encodeURIComponent(slug)}&include=${encodeURIComponent(includes)}&page[size]=10`,
-    `${ANIMETHEMES_API}/anime?filter[search]=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
-    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=10`,
+    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=25`,
+    `${ANIMETHEMES_API}/anime?search=${encodeURIComponent(rawTitle)}&include=${encodeURIComponent(includes)}&page[size]=25`,
   ];
 
   let lastError = null;
@@ -321,8 +137,8 @@ async function searchAnimeRest(title) {
     }
   }
 
-  // Final fallback: scan more catalog pages and pick the best fuzzy match.
-  for (let page = 1; page <= 20; page += 1) {
+  // Final fallback: scan deeper into the catalog and pick the best fuzzy match.
+  for (let page = 1; page <= 120; page += 1) {
     const searchUrl = `${ANIMETHEMES_API}/anime?page[size]=25&page[number]=${page}&include=${encodeURIComponent(includes)}`;
     try {
       const payload = await fetchJson(searchUrl, { headers: REQUEST_HEADERS });
@@ -339,6 +155,25 @@ async function searchAnimeRest(title) {
 
   if (lastError) throw lastError;
   return null;
+}
+
+function buildVideoNavRow(prefix, userId, index, total, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}|prev|${userId}`)
+      .setLabel('Prev')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled || index <= 0),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}|next|${userId}`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled || index >= total - 1),
+  );
+}
+
+function videoLinkLine(item, index, total) {
+  return `Video ${index + 1}/${total} • ${item.label} • ${item.songTitle}\n${item.videoLink}`;
 }
 
 function normalizeThemeType(rawType) {
@@ -446,16 +281,8 @@ module.exports = {
     const includeLinks = interaction.options.getBoolean('links') ?? true;
 
     try {
-      let anime = null;
-      try {
-        anime = await searchAnimeGraphQL(title);
-      } catch (graphqlErr) {
-        console.warn('[animethemes] GraphQL lookup failed, falling back to REST:', graphqlErr?.message || graphqlErr);
-      }
-
-      if (!anime) {
-        anime = await searchAnimeRest(title);
-      }
+      // GraphQL endpoint behavior has been unstable; use REST for predictable results.
+      const anime = await searchAnimeRest(title);
 
       if (!anime) {
         await interaction.editReply(`No anime found for \`${title}\`.`);
@@ -488,20 +315,6 @@ module.exports = {
         .setColor(0x22c55e)
         .setFooter({ text: 'Data from AnimeThemes.moe' });
 
-      if (includeLinks) {
-        const linkLines = themeItems
-          .filter((item) => Boolean(item.videoLink))
-          .slice(0, 5)
-          .map((item) => `[${item.label} video](${item.videoLink})`);
-
-        if (linkLines.length) {
-          embed.addFields({
-            name: 'Video Links',
-            value: linkLines.join(' • ').slice(0, 1024),
-          });
-        }
-      }
-
       const imageUrl = Array.isArray(anime?.images)
         ? anime.images.map((img) => img?.link).find(Boolean)
         : Array.isArray(anime?.attributes?.images)
@@ -511,13 +324,64 @@ module.exports = {
         embed.setThumbnail(imageUrl);
       }
 
-      const primaryVideo = includeLinks
-        ? themeItems.map((item) => item.videoLink).find(Boolean)
-        : null;
-
       await interaction.editReply({
-        content: primaryVideo ? `Featured theme video: ${primaryVideo}` : undefined,
         embeds: [embed],
+      });
+
+      if (!includeLinks) return;
+
+      const videoItems = themeItems.filter((item) => Boolean(item.videoLink));
+      if (!videoItems.length) return;
+
+      let currentIndex = 0;
+      const navPrefix = `animethemes_nav:${interaction.id}`;
+
+      const navMessage = await interaction.followUp({
+        content: videoLinkLine(videoItems[currentIndex], currentIndex, videoItems.length),
+        components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length)],
+        fetchReply: true,
+      });
+
+      if (videoItems.length <= 1) return;
+
+      const collector = navMessage.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 120000,
+      });
+
+      collector.on('collect', async (btnInteraction) => {
+        const [prefix, action, ownerId] = btnInteraction.customId.split('|');
+
+        if (prefix !== navPrefix || ownerId !== interaction.user.id) {
+          await btnInteraction.reply({ content: "This video navigator isn't for you.", ephemeral: true });
+          return;
+        }
+
+        if (btnInteraction.user.id !== interaction.user.id) {
+          await btnInteraction.reply({ content: "Only the command user can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (action === 'prev') {
+          currentIndex = Math.max(0, currentIndex - 1);
+        } else if (action === 'next') {
+          currentIndex = Math.min(videoItems.length - 1, currentIndex + 1);
+        }
+
+        await btnInteraction.update({
+          content: videoLinkLine(videoItems[currentIndex], currentIndex, videoItems.length),
+          components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length)],
+        });
+      });
+
+      collector.on('end', async () => {
+        try {
+          await navMessage.edit({
+            components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length, true)],
+          });
+        } catch {
+          // Ignore if message was deleted or already edited.
+        }
       });
     } catch (err) {
       console.error('[animethemes]', err);
