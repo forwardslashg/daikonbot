@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 
@@ -85,6 +86,18 @@ function animeName(anime) {
 
 function animeSlug(anime) {
   return String(anime?.slug ?? anime?.attributes?.slug ?? '').trim();
+}
+
+function uniqBy(items, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function scoreAnimeMatch(anime, title, normalizedNeedle, slugNeedle) {
@@ -241,6 +254,201 @@ async function searchAnimeRest(title) {
   return null;
 }
 
+async function gatherAnimeCandidates(title) {
+  const rawTitle = String(title ?? '').trim();
+  const startedAt = Date.now();
+  const maxDurationMs = 12000;
+  const queryCandidates = [
+    `${ANIMETHEMES_API}/anime?q=${encodeURIComponent(rawTitle)}&page[size]=30`,
+    `${ANIMETHEMES_API}/anime?search=${encodeURIComponent(rawTitle)}&page[size]=30`,
+  ];
+
+  const ranked = [];
+
+  for (const baseUrl of queryCandidates) {
+    for (let page = 1; page <= 4; page += 1) {
+      if (Date.now() - startedAt > maxDurationMs) break;
+
+      const url = `${baseUrl}&page[number]=${page}`;
+      try {
+        const payload = await fetchJson(url, { headers: REQUEST_HEADERS, timeoutMs: 5000 });
+        const animeList = getAnimeResults(payload);
+        if (!animeList.length) break;
+
+        const normalizedNeedle = normalizeText(rawTitle);
+        const slugNeedle = titleToSlug(rawTitle);
+        for (const anime of animeList) {
+          const score = scoreAnimeMatch(anime, rawTitle, normalizedNeedle, slugNeedle);
+          if (score <= 0) continue;
+          ranked.push({
+            anime,
+            score,
+            name: animeName(anime),
+            slug: animeSlug(anime),
+          });
+        }
+      } catch (err) {
+        console.warn(`[animethemes] Candidate fetch failed: ${err?.message || err}`);
+        break;
+      }
+    }
+  }
+
+  const deduped = uniqBy(
+    ranked
+      .filter((item) => item.name)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)),
+    (item) => item.slug || normalizeText(item.name),
+  );
+
+  return deduped.slice(0, 25);
+}
+
+function buildAnimePickerComponents(prefix, userId, candidates, pageIndex) {
+  const pageSize = 5;
+  const totalPages = Math.max(1, Math.ceil(candidates.length / pageSize));
+  const safePage = Math.min(Math.max(pageIndex, 0), totalPages - 1);
+  const start = safePage * pageSize;
+  const pageItems = candidates.slice(start, start + pageSize);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${prefix}|pick|${userId}|${safePage}`)
+    .setPlaceholder('Select an anime result')
+    .addOptions(
+      pageItems.map((item, offset) => ({
+        label: item.name.slice(0, 100),
+        description: `Match score: ${item.score}`.slice(0, 100),
+        value: String(start + offset),
+      })),
+    );
+
+  const navRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}|prev|${userId}`)
+      .setLabel('Prev')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage <= 0),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}|next|${userId}`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= totalPages - 1),
+  );
+
+  return {
+    pageItems,
+    safePage,
+    totalPages,
+    components: [
+      new ActionRowBuilder().addComponents(select),
+      navRow,
+    ],
+  };
+}
+
+function buildAnimePickerEmbed(title, candidates, pageIndex) {
+  const { pageItems, safePage, totalPages } = buildAnimePickerComponents('x', 'x', candidates, pageIndex);
+
+  return new EmbedBuilder()
+    .setTitle('Pick An Anime')
+    .setDescription([
+      `I couldn't confidently match **${title}**.`,
+      'Select one of these closest results:',
+      '',
+      ...pageItems.map((item, idx) => `${safePage * 5 + idx + 1}. **${item.name}**`),
+      '',
+      `Page ${safePage + 1}/${totalPages}`,
+    ].join('\n'))
+    .setColor(0xf59e0b)
+    .setFooter({ text: 'Selection times out in 60s' });
+}
+
+async function promptUserToPickAnime(interaction, title, candidates) {
+  if (!candidates.length) return null;
+
+  const pickerPrefix = `animethemes_pick_${interaction.id}`;
+  let page = 0;
+  let picked = null;
+
+  const initial = buildAnimePickerComponents(pickerPrefix, interaction.user.id, candidates, page);
+  const pickerEmbed = buildAnimePickerEmbed(title, candidates, page);
+
+  await interaction.editReply({
+    embeds: [pickerEmbed],
+    components: initial.components,
+  });
+
+  const reply = await interaction.fetchReply();
+  const collector = reply.createMessageComponentCollector({ time: 60000 });
+
+  await new Promise((resolve) => {
+    collector.on('collect', async (componentInteraction) => {
+      const [prefix, action, ownerId] = componentInteraction.customId.split('|');
+
+      if (prefix !== pickerPrefix || ownerId !== interaction.user.id) {
+        await componentInteraction.reply({ content: "This anime picker isn't for you.", ephemeral: true });
+        return;
+      }
+
+      if (componentInteraction.user.id !== interaction.user.id) {
+        await componentInteraction.reply({ content: 'Only the command user can use this picker.', ephemeral: true });
+        return;
+      }
+
+      if (componentInteraction.isButton()) {
+        if (action === 'prev') page -= 1;
+        if (action === 'next') page += 1;
+
+        const built = buildAnimePickerComponents(pickerPrefix, interaction.user.id, candidates, page);
+        page = built.safePage;
+
+        await componentInteraction.update({
+          embeds: [buildAnimePickerEmbed(title, candidates, page)],
+          components: built.components,
+        });
+        return;
+      }
+
+      if (componentInteraction.isStringSelectMenu() && action === 'pick') {
+        const pickedIndex = Number(componentInteraction.values?.[0]);
+        if (!Number.isInteger(pickedIndex) || !candidates[pickedIndex]) {
+          await componentInteraction.reply({ content: 'Invalid selection.', ephemeral: true });
+          return;
+        }
+
+        picked = candidates[pickedIndex];
+        await componentInteraction.deferUpdate();
+        collector.stop('selected');
+      }
+    });
+
+    collector.on('end', () => resolve());
+  });
+
+  if (!picked) {
+    await interaction.editReply({
+      content: 'Selection timed out. Run the command again and pick an anime from the list.',
+      embeds: [],
+      components: [],
+    });
+    return null;
+  }
+
+  const includes = 'images,animethemes,animethemes.song,animethemes.song.artists,animethemes.animethemeentries,animethemes.animethemeentries.videos';
+  const slug = picked.slug;
+
+  if (slug) {
+    try {
+      const hydrated = await fetchAnimeBySlug(slug, includes);
+      if (hydrated) return hydrated;
+    } catch (err) {
+      console.warn(`[animethemes] Picked anime hydration failed: ${err?.message || err}`);
+    }
+  }
+
+  return picked.anime ?? null;
+}
+
 function buildVideoNavRow(prefix, userId, index, total, disabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -369,7 +577,15 @@ module.exports = {
 
     try {
       // GraphQL endpoint behavior has been unstable; use REST for predictable results.
-      const anime = await searchAnimeRest(title);
+      let anime = await searchAnimeRest(title);
+
+      if (!anime) {
+        const candidates = await gatherAnimeCandidates(title);
+        if (candidates.length) {
+          console.info(`[animethemes] Prompting user with ${candidates.length} candidate(s) for title="${title}"`);
+          anime = await promptUserToPickAnime(interaction, title, candidates);
+        }
+      }
 
       if (!anime) {
         console.info(`[animethemes] No anime resolved title="${title}" elapsedMs=${Date.now() - startedAt}`);
@@ -414,7 +630,9 @@ module.exports = {
       }
 
       await interaction.editReply({
+        content: undefined,
         embeds: [embed],
+        components: [],
       });
 
       console.info(`[animethemes] Embed sent anime="${resolvedAnimeName}" themes=${themeItems.length} elapsedMs=${Date.now() - startedAt}`);
