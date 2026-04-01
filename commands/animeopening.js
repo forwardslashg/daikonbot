@@ -437,23 +437,74 @@ async function promptUserToPickAnime(interaction, title, candidates) {
   return picked.anime ?? null;
 }
 
-function buildVideoNavRow(prefix, userId, index, total, disabled = false) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${prefix}|prev|${userId}`)
-      .setLabel('Prev')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled || index <= 0),
-    new ButtonBuilder()
-      .setCustomId(`${prefix}|next|${userId}`)
-      .setLabel('Next')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled || index >= total - 1),
-  );
+function buildVariantBadges(variant) {
+  const badges = [];
+  if (variant.version) badges.push(`v${variant.version}`);
+  if (variant.source) badges.push(String(variant.source));
+  if (variant.resolution) badges.push(`${variant.resolution}p`);
+  if (variant.noCredit) badges.push('NC');
+  if (variant.overlap && variant.overlap !== 'NONE') badges.push(`OV:${variant.overlap}`);
+  if (variant.subbed) badges.push('SUB');
+  if (variant.lyrics) badges.push('LYR');
+  if (variant.uncen) badges.push('UNCEN');
+  return badges;
 }
 
-function videoLinkLine(item, index, total) {
-  return `Video ${index + 1}/${total} • ${item.label} • ${item.songTitle}\n${item.videoLink}`;
+function variantLine(variant, index, total) {
+  const badges = buildVariantBadges(variant);
+  const badgeText = badges.length ? ` [${badges.join(' | ')}]` : '';
+  const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
+  return `Variant ${index + 1}/${total} • ${variant.themeLabel}${episodeText}${badgeText}\n${variant.videoLink}`;
+}
+
+function buildVariantPickerComponents(prefix, userId, variants, pageIndex = 0, disabled = false) {
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(variants.length / pageSize));
+  const safePage = Math.min(Math.max(pageIndex, 0), totalPages - 1);
+  const start = safePage * pageSize;
+  const pageItems = variants.slice(start, start + pageSize);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${prefix}|pick|${userId}|${safePage}`)
+    .setPlaceholder('Pick OP/ED variant (quality, NC, version)')
+    .setDisabled(disabled)
+    .addOptions(
+      pageItems.map((item, idx) => {
+        const globalIndex = start + idx;
+        const badges = buildVariantBadges(item).join(' ');
+        const descriptionParts = [
+          item.songTitle,
+          badges,
+        ].filter(Boolean).join(' • ');
+
+        return {
+          label: `${item.themeLabel} ${item.variantLabel}`.trim().slice(0, 100),
+          description: descriptionParts.slice(0, 100) || 'AnimeThemes video variant',
+          value: String(globalIndex),
+        };
+      }),
+    );
+
+  const rows = [new ActionRowBuilder().addComponents(select)];
+
+  if (totalPages > 1) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${prefix}|prev|${userId}`)
+          .setLabel('Prev')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(disabled || safePage <= 0),
+        new ButtonBuilder()
+          .setCustomId(`${prefix}|next|${userId}`)
+          .setLabel('Next')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(disabled || safePage >= totalPages - 1),
+      ),
+    );
+  }
+
+  return { components: rows, safePage, totalPages };
 }
 
 function normalizeThemeType(rawType) {
@@ -509,13 +560,50 @@ function extractThemeItems(anime, requestedType) {
       ? theme.animethemeentries.map((entry) => entry?.episodes).filter(Boolean)[0]
       : null;
 
+    const variants = [];
+    const entries = Array.isArray(theme?.animethemeentries) ? theme.animethemeentries : [];
+    for (const entry of entries) {
+      const videos = Array.isArray(entry?.videos) ? entry.videos : [];
+      for (let idx = 0; idx < videos.length; idx += 1) {
+        const video = videos[idx];
+        const videoLink = typeof video?.link === 'string' ? video.link.trim() : '';
+        if (!videoLink) continue;
+
+        const version = Number.isInteger(entry?.version) ? entry.version : null;
+        const variantLabel = [
+          version ? `v${version}` : null,
+          Number.isInteger(video?.resolution) ? `${video.resolution}p` : null,
+          video?.nc ? 'NC' : null,
+          video?.source ? String(video.source).toUpperCase() : null,
+          idx > 0 ? `alt ${idx + 1}` : null,
+        ].filter(Boolean).join(' ');
+
+        variants.push({
+          themeLabel: themeDisplayLabel(theme, fallbackIndex),
+          variantLabel: variantLabel || `variant ${idx + 1}`,
+          songTitle,
+          videoLink,
+          episodes: entry?.episodes || null,
+          version,
+          resolution: Number.isInteger(video?.resolution) ? video.resolution : null,
+          source: video?.source ? String(video.source).toUpperCase() : null,
+          noCredit: Boolean(video?.nc),
+          overlap: video?.overlap ? String(video.overlap).toUpperCase() : null,
+          subbed: Boolean(video?.subbed),
+          lyrics: Boolean(video?.lyrics),
+          uncen: Boolean(video?.uncen),
+        });
+      }
+    }
+
     items.push({
       type,
       label: themeDisplayLabel(theme, fallbackIndex),
       songTitle,
       artistText,
       episodes,
-      videoLink: firstVideoLink(theme),
+      videoLink: variants[0]?.videoLink || firstVideoLink(theme),
+      variants,
     });
   }
 
@@ -630,54 +718,79 @@ module.exports = {
       const videoItems = themeItems.filter((item) => Boolean(item.videoLink));
       if (!videoItems.length) return;
 
-      let currentIndex = 0;
-      const navPrefix = `animethemes_nav:${interaction.id}`;
+      const variants = themeItems
+        .flatMap((item) => (Array.isArray(item.variants) ? item.variants : []))
+        .filter((variant) => Boolean(variant?.videoLink));
+      if (!variants.length) return;
 
-      const navMessage = await interaction.followUp({
-        content: videoLinkLine(videoItems[currentIndex], currentIndex, videoItems.length),
-        components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length)],
+      let selectedIndex = 0;
+      let page = 0;
+      const pickerPrefix = `animethemes_variant_${interaction.id}`;
+      const initial = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
+      page = initial.safePage;
+
+      const pickerMessage = await interaction.followUp({
+        content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
+        components: initial.components,
         fetchReply: true,
       });
 
-      console.info(`[animethemes] Link navigator sent links=${videoItems.length} elapsedMs=${Date.now() - startedAt}`);
+      console.info(`[animethemes] Variant picker sent variants=${variants.length} elapsedMs=${Date.now() - startedAt}`);
 
-      if (videoItems.length <= 1) return;
-
-      const collector = navMessage.createMessageComponentCollector({
-        componentType: ComponentType.Button,
+      const collector = pickerMessage.createMessageComponentCollector({
         time: 120000,
       });
 
-      collector.on('collect', async (btnInteraction) => {
-        const [prefix, action, ownerId] = btnInteraction.customId.split('|');
+      collector.on('collect', async (componentInteraction) => {
+        const [prefix, action, ownerId] = componentInteraction.customId.split('|');
 
-        if (prefix !== navPrefix || ownerId !== interaction.user.id) {
-          await btnInteraction.reply({ content: "This video navigator isn't for you.", ephemeral: true });
+        if (prefix !== pickerPrefix || ownerId !== interaction.user.id) {
+          await componentInteraction.reply({ content: "This variant picker isn't for you.", ephemeral: true });
           return;
         }
 
-        if (btnInteraction.user.id !== interaction.user.id) {
-          await btnInteraction.reply({ content: "Only the command user can use these buttons.", ephemeral: true });
+        if (componentInteraction.user.id !== interaction.user.id) {
+          await componentInteraction.reply({ content: 'Only the command user can use this picker.', ephemeral: true });
           return;
         }
 
-        if (action === 'prev') {
-          currentIndex = Math.max(0, currentIndex - 1);
-        } else if (action === 'next') {
-          currentIndex = Math.min(videoItems.length - 1, currentIndex + 1);
+        if (componentInteraction.isButton()) {
+          if (action === 'prev') page -= 1;
+          if (action === 'next') page += 1;
+
+          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
+          page = rebuilt.safePage;
+
+          await componentInteraction.update({
+            content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
+            components: rebuilt.components,
+          });
+          return;
         }
 
-        await btnInteraction.update({
-          content: videoLinkLine(videoItems[currentIndex], currentIndex, videoItems.length),
-          components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length)],
-        });
+        if (componentInteraction.isStringSelectMenu() && action === 'pick') {
+          const idx = Number(componentInteraction.values?.[0]);
+          if (!Number.isInteger(idx) || !variants[idx]) {
+            await componentInteraction.reply({ content: 'Invalid variant selection.', ephemeral: true });
+            return;
+          }
+
+          selectedIndex = idx;
+          page = Math.floor(selectedIndex / 25);
+          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
+          page = rebuilt.safePage;
+
+          await componentInteraction.update({
+            content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
+            components: rebuilt.components,
+          });
+        }
       });
 
       collector.on('end', async () => {
         try {
-          await navMessage.edit({
-            components: [buildVideoNavRow(navPrefix, interaction.user.id, currentIndex, videoItems.length, true)],
-          });
+          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page, true);
+          await pickerMessage.edit({ components: rebuilt.components });
         } catch {
           // Ignore if message was deleted or already edited.
         }
