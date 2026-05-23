@@ -69,6 +69,22 @@ function getAniListUsername(userId) {
   return profile?.anilistUsername ?? null;
 }
 
+function getUserMode(userId) {
+  const profile = getUserProfile(userId);
+  return profile?.mode ?? 'chat';
+}
+
+function setUserMode(userId, mode) {
+  const profiles = ensureLoaded();
+  profiles.users[userId] = {
+    ...(profiles.users[userId] ?? {}),
+    mode: mode,
+    updatedAt: Date.now(),
+  };
+  save();
+  return mode;
+}
+
 function setAniListUsername(userId, username) {
   const sanitized = sanitizeAniListUsername(username);
   if (!sanitized) throw new Error('Invalid AniList username. Use 2-20 letters, numbers, or underscore.');
@@ -105,4 +121,6 @@ module.exports = {
   setAniListUsername,
   clearAniListUsername,
   sanitizeAniListUsername,
+  getUserMode,
+  setUserMode,
 };

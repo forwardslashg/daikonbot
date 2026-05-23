@@ -19,11 +19,16 @@ const {
   getModelCreditCost,
   getGlobalGeminiUsage,
 } = require('../utils/aiEngine');
+const {
+  getUserMode,
+  setUserMode,
+} = require('../utils/aiProfiles');
 
 const SCOPE_USER = 'user';
 const SCOPE_DEFAULT = 'default';
 
 const SELECT_PREFIX = 'aimodel_select';
+const MODE_PREFIX = 'aimodel_mode';
 const RESET_PREFIX = 'aimodel_reset';
 const REFRESH_PREFIX = 'aimodel_refresh';
 const GEMMA_MODEL = 'gemma-4-31b-it';
@@ -94,22 +99,31 @@ function scopeLabel(scope) {
   return scope === SCOPE_DEFAULT ? 'global default' : 'your model';
 }
 
-function buildStatusEmbed(userId, scope, selected = null) {
+function buildStatusEmbed(userId, scope, selected = null, currentMode = null) {
   const userSelection = getUserAISelection(userId);
   const effective = selected ?? getEffectiveAISelection(userId);
   const defaultSelection = getDefaultAISelection();
   const geminiUsage = getGlobalGeminiUsage();
+  
+  const mode = currentMode ?? getUserMode(userId);
 
   const embed = new EmbedBuilder()
     .setColor(0x00a884)
-    .setTitle('AI model picker')
-    .setDescription(`Target: **${scopeLabel(scope)}**\nPick a provider/model from the dropdown below.`)
+    .setTitle('AI settings')
+    .setDescription(`Target: **${scopeLabel(scope)}**\nPick a provider/model or personality mode below.`)
     .addFields(
-      { name: 'Selected', value: selectionSummary(effective) },
-      { name: 'Your override', value: userSelection ? selectionSummary(userSelection) : 'none, using the bot default' },
-      { name: 'Bot default', value: selectionSummary(defaultSelection) },
-      { name: 'Gemini usage', value: `**${geminiUsage.used}/${geminiUsage.limit}** today` },
+      { name: 'Selected Model', value: selectionSummary(effective) },
     );
+
+  if (scope === SCOPE_USER) {
+    embed.addFields({ name: 'Personality Mode', value: mode === 'unfiltered' ? '🔓 Unfiltered' : '💬 Standard Chat' });
+  }
+
+  embed.addFields(
+    { name: 'Your override', value: userSelection ? selectionSummary(userSelection) : 'none, using the bot default' },
+    { name: 'Bot default', value: selectionSummary(defaultSelection) },
+    { name: 'Gemini usage', value: `**${geminiUsage.used}/${geminiUsage.limit}** today` },
+  );
 
   if (effective.provider === 'gemini' && effective.model === GEMMA_MODEL) {
     embed.addFields({
@@ -127,7 +141,7 @@ function buildStatusEmbed(userId, scope, selected = null) {
   return embed;
 }
 
-function buildComponents(userId, scope, selected) {
+function buildComponents(userId, scope, selected, currentMode = null) {
   const selectionValue = `${selected.provider}|${selected.model}`;
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`${SELECT_PREFIX}:${userId}:${scope}`)
@@ -141,10 +155,33 @@ function buildComponents(userId, scope, selected) {
         emoji: PROVIDER_EMOJIS[entry.provider] ? { name: PROVIDER_EMOJIS[entry.provider] } : undefined,
       })),
     );
-
+    
   const rows = [new ActionRowBuilder().addComponents(menu)];
 
   if (scope === SCOPE_USER) {
+    const mode = currentMode ?? getUserMode(userId);
+    const modeMenu = new StringSelectMenuBuilder()
+      .setCustomId(`${MODE_PREFIX}:${userId}:${scope}`)
+      .setPlaceholder('Choose a personality mode')
+      .addOptions([
+        {
+          label: 'Standard Chat',
+          value: 'chat',
+          description: 'Default friendly and helpful personality',
+          default: mode === 'chat',
+          emoji: { name: '💬' }
+        },
+        {
+          label: 'Unfiltered',
+          value: 'unfiltered',
+          description: 'Uncensored, unhinged, literal responses',
+          default: mode === 'unfiltered',
+          emoji: { name: '🔓' }
+        }
+      ]);
+    rows.push(new ActionRowBuilder().addComponents(modeMenu));
+
+    rows.push(
     rows.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -214,38 +251,60 @@ module.exports = {
   },
 
   async handleSelectMenu(interaction) {
-    if (!interaction.customId.startsWith(`${SELECT_PREFIX}:`)) return false;
+    if (interaction.customId.startsWith(`${SELECT_PREFIX}:`)) {
+      const [, targetUserId, scope] = interaction.customId.split(':');
+      if (interaction.user.id !== targetUserId) {
+        await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+        return true;
+      }
 
-    const [, targetUserId, scope] = interaction.customId.split(':');
-    if (interaction.user.id !== targetUserId) {
-      await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+      if (scope === SCOPE_DEFAULT && !isOwner(interaction.user.id)) {
+        await interaction.reply({ content: 'Only the bot owner can change the global default model.', ephemeral: true });
+        return true;
+      }
+
+      const parsed = parseSelectionValue(interaction.values?.[0]);
+      if (!parsed) {
+        await interaction.reply({ content: 'Invalid model selection.', ephemeral: true });
+        return true;
+      }
+
+      let saved;
+      if (scope === SCOPE_DEFAULT) {
+        saved = setDefaultAISelection(parsed.provider, parsed.model);
+      } else {
+        saved = setUserAISelection(interaction.user.id, parsed.provider, parsed.model);
+      }
+
+      await interaction.update({
+        embeds: [buildStatusEmbed(interaction.user.id, scope, saved)],
+        components: buildComponents(interaction.user.id, scope, saved),
+      });
+
       return true;
     }
 
-    if (scope === SCOPE_DEFAULT && !isOwner(interaction.user.id)) {
-      await interaction.reply({ content: 'Only the bot owner can change the global default model.', ephemeral: true });
+    if (interaction.customId.startsWith(`${MODE_PREFIX}:`)) {
+      const [, targetUserId, scope] = interaction.customId.split(':');
+      if (interaction.user.id !== targetUserId) {
+        await interaction.reply({ content: "This model picker isn't for you.", ephemeral: true });
+        return true;
+      }
+
+      const selectedMode = interaction.values?.[0] ?? 'chat';
+      setUserMode(interaction.user.id, selectedMode);
+
+      const selected = scope === SCOPE_DEFAULT ? getDefaultAISelection() : getEffectiveAISelection(interaction.user.id);
+
+      await interaction.update({
+        embeds: [buildStatusEmbed(interaction.user.id, scope, selected, selectedMode)],
+        components: buildComponents(interaction.user.id, scope, selected, selectedMode),
+      });
+
       return true;
     }
 
-    const parsed = parseSelectionValue(interaction.values?.[0]);
-    if (!parsed) {
-      await interaction.reply({ content: 'Invalid model selection.', ephemeral: true });
-      return true;
-    }
-
-    let saved;
-    if (scope === SCOPE_DEFAULT) {
-      saved = setDefaultAISelection(parsed.provider, parsed.model);
-    } else {
-      saved = setUserAISelection(interaction.user.id, parsed.provider, parsed.model);
-    }
-
-    await interaction.update({
-      embeds: [buildStatusEmbed(interaction.user.id, scope, saved)],
-      components: buildComponents(interaction.user.id, scope, saved),
-    });
-
-    return true;
+    return false;
   },
 
   async handleButton(interaction) {
@@ -257,11 +316,13 @@ module.exports = {
       }
 
       resetUserAISelection(interaction.user.id);
+      setUserMode(interaction.user.id, 'chat');
+      
       const effective = getEffectiveAISelection(interaction.user.id);
 
       await interaction.update({
-        embeds: [buildStatusEmbed(interaction.user.id, SCOPE_USER, effective)],
-        components: buildComponents(interaction.user.id, SCOPE_USER, effective),
+        embeds: [buildStatusEmbed(interaction.user.id, SCOPE_USER, effective, 'chat')],
+        components: buildComponents(interaction.user.id, SCOPE_USER, effective, 'chat'),
       });
       return true;
     }
@@ -274,9 +335,10 @@ module.exports = {
       }
 
       const selected = scope === SCOPE_DEFAULT ? getDefaultAISelection() : getEffectiveAISelection(interaction.user.id);
+      const mode = getUserMode(interaction.user.id);
       await interaction.update({
-        embeds: [buildStatusEmbed(interaction.user.id, scope, selected)],
-        components: buildComponents(interaction.user.id, scope, selected),
+        embeds: [buildStatusEmbed(interaction.user.id, scope, selected, mode)],
+        components: buildComponents(interaction.user.id, scope, selected, mode),
       });
       return true;
     }

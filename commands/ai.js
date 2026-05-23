@@ -35,6 +35,7 @@ const {
 const {
   getAniListUsername,
   setAniListUsername,
+  getUserMode,
 } = require('../utils/aiProfiles');
 const {
   getAniListUserOverview,
@@ -457,7 +458,8 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
   const session        = getSession(userId);
   const priorHistory   = session?.history ?? [];
   const selection      = getEffectiveAISelection(userId);
-  const sysInstruction = buildSystemInstruction(userId, 'chat', selection.provider);
+  const mode = getUserMode(userId);
+  const sysInstruction = buildSystemInstruction(userId, mode, selection.provider);
 
   try {
     let geminiRateLimited = false;
