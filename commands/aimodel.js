@@ -3,6 +3,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
   StringSelectMenuBuilder,
 } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
@@ -25,6 +26,19 @@ const SCOPE_DEFAULT = 'default';
 const SELECT_PREFIX = 'aimodel_select';
 const RESET_PREFIX = 'aimodel_reset';
 const REFRESH_PREFIX = 'aimodel_refresh';
+const GEMMA_MODEL = 'gemma-4-31b-it';
+
+const PROVIDER_LABELS = {
+  gemini: 'Google AI',
+  groq: 'Groq',
+  github: 'GitHub Models',
+};
+
+const PROVIDER_EMOJIS = {
+  gemini: '🟡',
+  groq: '⚡',
+  github: '🐙',
+};
 
 function flattenModelOptions() {
   const options = [];
@@ -38,50 +52,93 @@ function flattenModelOptions() {
   return options;
 }
 
+function providerLabel(provider) {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
+
+function optionLabel(entry) {
+  return `${providerLabel(entry.provider)} · ${entry.model}`.slice(0, 100);
+}
+
+function optionDescription(entry) {
+  const tags = [];
+
+  if (entry.provider === 'gemini' && entry.model === GEMMA_MODEL) {
+    tags.push('Search grounded', 'Safety off');
+  } else if (entry.provider === 'gemini') {
+    tags.push('Google AI');
+  } else if (entry.provider === 'groq') {
+    tags.push('Fast Groq model');
+  } else if (entry.provider === 'github') {
+    tags.push('GitHub hosted');
+  }
+
+  tags.push(`${getModelCreditCost(entry.provider, entry.model)} credit(s)/request`);
+  return tags.join(' · ').slice(0, 100);
+}
+
+function selectionLabel(selection) {
+  return `${providerLabel(selection.provider)} · ${selection.model}`;
+}
+
+function selectionSummary(selection) {
+  const bits = [selectionLabel(selection)];
+  if (selection.provider === 'gemini' && selection.model === GEMMA_MODEL) {
+    bits.push('Search grounded', 'safety off');
+  }
+  bits.push(`${getModelCreditCost(selection.provider, selection.model)} credit(s)/request`);
+  return bits.join(' · ');
+}
+
 function scopeLabel(scope) {
   return scope === SCOPE_DEFAULT ? 'global default' : 'your model';
 }
 
-function selectionLabel(selection) {
-  return `${selection.provider}:${selection.model}`;
-}
-
-function buildStatusText(userId, scope, selected = null) {
+function buildStatusEmbed(userId, scope, selected = null) {
   const userSelection = getUserAISelection(userId);
   const effective = selected ?? getEffectiveAISelection(userId);
   const defaultSelection = getDefaultAISelection();
-  const cost = getModelCreditCost(effective.provider, effective.model);
   const geminiUsage = getGlobalGeminiUsage();
 
-  const lines = [
-    '**AI model picker**',
-    `Target: **${scopeLabel(scope)}**`,
-    `Selected: \`${selectionLabel(effective)}\` (${cost} credit(s)/request)`,
-    `Your override: ${userSelection ? `\`${selectionLabel(userSelection)}\`` : 'none (using default)'}`,
-    `Bot default: \`${selectionLabel(defaultSelection)}\``,
-    `Gemini global usage: **${geminiUsage.used}/${geminiUsage.limit}** today`,
-    '',
-    'Pick a model from the dropdown below.',
-  ];
+  const embed = new EmbedBuilder()
+    .setColor(0x00a884)
+    .setTitle('AI model picker')
+    .setDescription(`Target: **${scopeLabel(scope)}**\nPick a provider/model from the dropdown below.`)
+    .addFields(
+      { name: 'Selected', value: selectionSummary(effective) },
+      { name: 'Your override', value: userSelection ? selectionSummary(userSelection) : 'none, using the bot default' },
+      { name: 'Bot default', value: selectionSummary(defaultSelection) },
+      { name: 'Gemini usage', value: `**${geminiUsage.used}/${geminiUsage.limit}** today` },
+    );
 
-  if (scope === SCOPE_DEFAULT) {
-    lines.push('-# Owner mode: your selection updates the bot default for everyone.');
+  if (effective.provider === 'gemini' && effective.model === GEMMA_MODEL) {
+    embed.addFields({
+      name: 'Gemma note',
+      value: 'This model uses Google Search grounding and has all safety settings disabled.',
+    });
   }
 
-  return lines.join('\n');
+  if (scope === SCOPE_DEFAULT) {
+    embed.setFooter({ text: 'Owner mode: changes here update the bot default for everyone.' });
+  } else {
+    embed.setFooter({ text: 'Your personal selection only affects your account.' });
+  }
+
+  return embed;
 }
 
 function buildComponents(userId, scope, selected) {
   const selectionValue = `${selected.provider}|${selected.model}`;
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`${SELECT_PREFIX}:${userId}:${scope}`)
-    .setPlaceholder('Choose provider + model')
+    .setPlaceholder('Choose a provider and model')
     .addOptions(
       flattenModelOptions().map((entry) => ({
-        label: `${entry.provider} / ${entry.model}`.slice(0, 100),
+        label: optionLabel(entry),
         value: `${entry.provider}|${entry.model}`,
-        description: `${getModelCreditCost(entry.provider, entry.model)} credit(s) per request`.slice(0, 100),
+        description: optionDescription(entry),
         default: `${entry.provider}|${entry.model}` === selectionValue,
+        emoji: PROVIDER_EMOJIS[entry.provider] ? { name: PROVIDER_EMOJIS[entry.provider] } : undefined,
       })),
     );
 
@@ -150,7 +207,7 @@ module.exports = {
       : getEffectiveAISelection(interaction.user.id);
 
     await interaction.reply({
-      content: buildStatusText(interaction.user.id, scope, selected),
+      embeds: [buildStatusEmbed(interaction.user.id, scope, selected)],
       components: buildComponents(interaction.user.id, scope, selected),
       ephemeral: true,
     });
@@ -184,7 +241,7 @@ module.exports = {
     }
 
     await interaction.update({
-      content: `${buildStatusText(interaction.user.id, scope, saved)}\n\n✅ Updated ${scopeLabel(scope)} to \`${selectionLabel(saved)}\`.`,
+      embeds: [buildStatusEmbed(interaction.user.id, scope, saved)],
       components: buildComponents(interaction.user.id, scope, saved),
     });
 
@@ -203,7 +260,7 @@ module.exports = {
       const effective = getEffectiveAISelection(interaction.user.id);
 
       await interaction.update({
-        content: `${buildStatusText(interaction.user.id, SCOPE_USER, effective)}\n\n✅ Reset complete. You are now using the bot default model.`,
+        embeds: [buildStatusEmbed(interaction.user.id, SCOPE_USER, effective)],
         components: buildComponents(interaction.user.id, SCOPE_USER, effective),
       });
       return true;
@@ -218,7 +275,7 @@ module.exports = {
 
       const selected = scope === SCOPE_DEFAULT ? getDefaultAISelection() : getEffectiveAISelection(interaction.user.id);
       await interaction.update({
-        content: buildStatusText(interaction.user.id, scope, selected),
+        embeds: [buildStatusEmbed(interaction.user.id, scope, selected)],
         components: buildComponents(interaction.user.id, scope, selected),
       });
       return true;

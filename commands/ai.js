@@ -3,6 +3,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -63,6 +64,7 @@ const MODAL_FOLLOWUP_ID = (uid) => `ai_modal_followup:${uid}`;
 const MODAL_ANILIST_ID = (uid, mode) => `ai_modal_anilist:${uid}:${mode}`;
 
 const COMPONENTS_V2_FLAG = 1 << 15;
+const GEMMA_MODEL = 'gemma-4-31b-it';
 
 const AI_TOOLS = [
   {
@@ -244,6 +246,49 @@ function makeButtonsV2(
   );
 
   return buttons;
+}
+
+function describeSelection(selection) {
+  const base = `${selection.provider}:${selection.model}`;
+  if (selection.provider === AI_PROVIDERS.GEMINI && selection.model === GEMMA_MODEL) {
+    return `${base} (Google Search grounded, safety off)`;
+  }
+  return base;
+}
+
+function buildThinkingPayload(userId, promptText, { isFollowUp = false } = {}) {
+  const selection = getEffectiveAISelection(userId);
+  const prompt = String(promptText ?? '').trim().replace(/\s+/g, ' ');
+  const embed = new EmbedBuilder()
+    .setColor(0x00a884)
+    .setTitle(isFollowUp ? 'Thinking about your follow-up' : 'Thinking about your prompt')
+    .setDescription('I’m checking the conversation context, tools, and model settings before replying.')
+    .addFields({ name: 'Active model', value: `\`${describeSelection(selection)}\`` });
+
+  if (prompt) {
+    embed.addFields({
+      name: 'Prompt',
+      value: prompt.length > 160 ? `${prompt.slice(0, 160)}…` : prompt,
+    });
+  }
+
+  embed.setFooter({ text: 'This message will update when the answer is ready.' });
+
+  return {
+    embeds: [embed],
+    components: [],
+  };
+}
+
+async function showThinkingState(interaction, userId, promptText, options = {}) {
+  const payload = buildThinkingPayload(userId, promptText, options);
+
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply(payload).catch(() => {});
+    return;
+  }
+
+  await interaction.reply(payload).catch(() => {});
 }
 
 function buildComponentsV2Payload(text, userId, turns, footer, buttonContext = {}) {
@@ -444,6 +489,8 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     consumeRateLimitForSelection(userId, selection.provider, selection.model);
   }
 
+  await showThinkingState(interaction, userId, promptText, { isFollowUp });
+
   const contextBlock   = await buildContextBlock(interaction, promptText);
   const session        = getSession(userId);
   const priorHistory   = session?.history ?? [];
@@ -505,7 +552,7 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     };
     const buttons = makeButtonsWithContext(userId, turns, buttonContext);
 
-    const send = interaction.deferred ? 'editReply' : (isFollowUp ? 'followUp' : 'editReply');
+    const send = interaction.deferred || interaction.replied ? 'editReply' : (isFollowUp ? 'followUp' : 'editReply');
 
     if (chunks.length === 1) {
       try {
@@ -685,8 +732,11 @@ async function handleButton(interaction) {
   if (action === 'ai_switchmodel') {
     try {
       const { previous, next } = getNextModelSelection(targetUserId);
+      const specialNote = next.provider === AI_PROVIDERS.GEMINI && next.model === GEMMA_MODEL
+        ? ' This model has Google Search grounding enabled and safety filters disabled.'
+        : '';
       await interaction.reply({
-        content: `Switched model from \`${previous.provider}:${previous.model}\` to \`${next.provider}:${next.model}\`. Retry your prompt now.`,
+        content: `Switched model from \`${describeSelection(previous)}\` to \`${describeSelection(next)}\`. Retry your prompt now.${specialNote}`,
         ephemeral: true,
       });
     } catch (err) {

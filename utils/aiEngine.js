@@ -23,6 +23,7 @@ const PROVIDER_MODELS = {
   [AI_PROVIDERS.GEMINI]: [
     'gemini-3-flash-preview',
     'gemini-3.1-pro-preview',
+    'gemma-4-31b-it',
   ],
   [AI_PROVIDERS.GROQ]: [
     'llama-3.3-70b-versatile',
@@ -46,6 +47,7 @@ const PROVIDER_MODELS = {
 const MODEL_CREDIT_COST = {
   'gemini-3-flash-preview': 1,
   'gemini-3.1-pro-preview': 3,
+  'gemma-4-31b-it': 4,
   'llama-3.3-70b-versatile': 2,
   'llama-3.1-8b-instant': 1,
   'deepseek-r1-distill-llama-70b': 2,
@@ -774,7 +776,24 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   }
 
   const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_KEY);
-  const model = genAI.getGenerativeModel({ model: modelName, systemInstruction });
+  const isGemma = modelName === 'gemma-4-31b-it';
+  const generationConfig = {
+    model: modelName,
+    systemInstruction,
+  };
+
+  if (isGemma) {
+    generationConfig.tools = [{ googleSearchRetrieval: {} }];
+    generationConfig.safetySettings = [
+      'HARM_CATEGORY_HARASSMENT',
+      'HARM_CATEGORY_HATE_SPEECH',
+      'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+      'HARM_CATEGORY_DANGEROUS_CONTENT',
+      'HARM_CATEGORY_CIVIC_INTEGRITY',
+    ].map((category) => ({ category, threshold: 'BLOCK_NONE' }));
+  }
+
+  const model = genAI.getGenerativeModel(generationConfig);
 
   const chat = model.startChat({ history });
   const result = await chat.sendMessage(userMessage);
