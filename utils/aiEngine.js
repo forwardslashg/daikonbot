@@ -5,7 +5,7 @@
  */
 
 const { ChannelType } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 const OpenAI = require('openai');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
@@ -783,14 +783,14 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   };
 
   if (isGemma) {
-    generationConfig.tools = [{ googleSearchRetrieval: {} }];
+    generationConfig.tools = [{ googleSearch: {} }];
     generationConfig.safetySettings = [
-      'HARM_CATEGORY_HARASSMENT',
-      'HARM_CATEGORY_HATE_SPEECH',
-      'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-      'HARM_CATEGORY_DANGEROUS_CONTENT',
-      'HARM_CATEGORY_CIVIC_INTEGRITY',
-    ].map((category) => ({ category, threshold: 'BLOCK_NONE' }));
+      HarmCategory.HARM_CATEGORY_HARASSMENT,
+      HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+      HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+      HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+      HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+    ].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_NONE }));
   }
 
   const model = genAI.getGenerativeModel(generationConfig);

@@ -3,7 +3,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -256,41 +255,6 @@ function describeSelection(selection) {
   return base;
 }
 
-function buildThinkingPayload(userId, promptText, { isFollowUp = false } = {}) {
-  const selection = getEffectiveAISelection(userId);
-  const prompt = String(promptText ?? '').trim().replace(/\s+/g, ' ');
-  const embed = new EmbedBuilder()
-    .setColor(0x00a884)
-    .setTitle(isFollowUp ? 'Thinking about your follow-up' : 'Thinking about your prompt')
-    .setDescription('I’m checking the conversation context, tools, and model settings before replying.')
-    .addFields({ name: 'Active model', value: `\`${describeSelection(selection)}\`` });
-
-  if (prompt) {
-    embed.addFields({
-      name: 'Prompt',
-      value: prompt.length > 160 ? `${prompt.slice(0, 160)}…` : prompt,
-    });
-  }
-
-  embed.setFooter({ text: 'This message will update when the answer is ready.' });
-
-  return {
-    embeds: [embed],
-    components: [],
-  };
-}
-
-async function showThinkingState(interaction, userId, promptText, options = {}) {
-  const payload = buildThinkingPayload(userId, promptText, options);
-
-  if (interaction.deferred || interaction.replied) {
-    await interaction.editReply(payload).catch(() => {});
-    return;
-  }
-
-  await interaction.reply(payload).catch(() => {});
-}
-
 function buildComponentsV2Payload(text, userId, turns, footer, buttonContext = {}) {
   const finalText = footer ? `${text}\n${footer}` : text;
 
@@ -488,8 +452,6 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     }
     consumeRateLimitForSelection(userId, selection.provider, selection.model);
   }
-
-  await showThinkingState(interaction, userId, promptText, { isFollowUp });
 
   const contextBlock   = await buildContextBlock(interaction, promptText);
   const session        = getSession(userId);
