@@ -182,7 +182,6 @@ function buildComponents(userId, scope, selected, currentMode = null) {
     rows.push(new ActionRowBuilder().addComponents(modeMenu));
 
     rows.push(
-    rows.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`${RESET_PREFIX}:${userId}`)
