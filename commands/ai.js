@@ -458,7 +458,6 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
   const priorHistory   = session?.history ?? [];
   const selection      = getEffectiveAISelection(userId);
   const sysInstruction = buildSystemInstruction(userId, 'chat', selection.provider);
-  const startedAt      = Date.now();
 
   try {
     let geminiRateLimited = false;
@@ -493,13 +492,9 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     }
 
     const retryNote = retryDelaySeconds ? `${retryDelaySeconds}s` : 'the provider retry delay';
-    const thoughtSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-    const thoughtLine = `-# Thought for ${thoughtSeconds}s`;
     let finalText = geminiRateLimited
       ? `${text}\n\n-# This request was rate-limited by Gemini and auto-retried after ${retryNote}.`
       : text;
-
-    finalText = `${thoughtLine}\n\n${finalText}`;
 
     const includeAniList = askedAniList || toolState.usedAniListTool || toolState.needsAniListAccess;
     const needsAniListAccess = includeAniList && (!linkedAniList || toolState.needsAniListAccess);
