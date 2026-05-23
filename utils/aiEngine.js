@@ -770,6 +770,10 @@ function historyText(historyEntry) {
   return historyEntry.parts.map((p) => p?.text ?? '').join('\n').trim();
 }
 
+function sanitizeAIOutput(text) {
+  return String(text ?? '').trim();
+}
+
 async function callGemini(modelName, systemInstruction, userMessage, history = []) {
   if (!process.env.GOOGLE_AI_KEY) {
     throw new Error('GOOGLE_AI_KEY is missing.');
@@ -797,7 +801,23 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
 
   const chat = model.startChat({ history });
   const result = await chat.sendMessage(userMessage);
-  return result.response.text().trim();
+  
+  // Extract text excluding thought parts
+  let finalText = '';
+  const candidate = result.response.candidates?.[0];
+  if (candidate?.content?.parts) {
+    for (const part of candidate.content.parts) {
+      if (part.thought) continue; // Skip thought parts
+      if (part.text) finalText += part.text;
+    }
+  } else {
+    finalText = result.response.text();
+  }
+  
+  // Also strip <think>...</think> tags if they leak into pure text
+  finalText = finalText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+  return sanitizeAIOutput(finalText);
 }
 
 async function callGroq(modelName, systemInstruction, userMessage, history = []) {
@@ -836,7 +856,7 @@ async function callGroq(modelName, systemInstruction, userMessage, history = [])
   }
 
   const data = await response.json();
-  return data?.choices?.[0]?.message?.content?.trim() ?? '';
+  return sanitizeAIOutput(data?.choices?.[0]?.message?.content);
 }
 
 async function callGitHubModels(modelName, systemInstruction, userMessage, history = []) {
@@ -868,7 +888,7 @@ async function callGitHubModels(modelName, systemInstruction, userMessage, histo
     temperature: 0.7,
   });
 
-  return response?.choices?.[0]?.message?.content?.trim() ?? '';
+  return sanitizeAIOutput(response?.choices?.[0]?.message?.content);
 }
 
 // ─── Unified AI caller ────────────────────────────────────────────────────────
@@ -1027,10 +1047,10 @@ function buildSystemInstruction(userId, mode = 'chat', provider = null) {
     : `Non-owner users share ${HOURLY_MAX} AI credits/hour (cost depends on model) across all AI commands, with a ${COOLDOWN_MS / 1000}s cooldown between requests. Gemini models also share a global ${GLOBAL_GEMINI_DAILY_MAX}/day cap.`;
 
   const modeInstructions = {
-    chat: 'You are a sharp, helpful AI assistant embedded in a Discord bot. Be conversational and natural.',
-    roast: 'You are a witty roast comedian in a Discord bot. Deliver a single, punchy roast (3-6 sentences) of the described user based on the details given. Keep it playful, spicy but never hateful or discriminatory. End with a small compliment to soften the blow.',
-    vibe: 'You are a fun, perceptive personality reader in a Discord bot. Based on the user profile details, give them a vibe check in 3-5 punchy sentences. Be playful and insightful. Do not be mean.',
-    tldr: 'You are a concise Discord chat summariser. Summarise the provided chat history in a clear, punchy bullet list. Focus on topics discussed, notable moments, and overall vibe. Keep it to 5-10 bullets max.',
+    chat: 'You are a sharp, helpful AI assistant embedded in a Discord bot. Be conversational and natural.\n\nCRITICAL INSTRUCTION: You MUST strictly output ONLY your final response to the user. DO NOT output any internal monologues, thoughts, "Plan:" sections, reasoning, or echoing of user statements. Go straight into your conversational response.',
+    roast: 'You are a witty roast comedian in a Discord bot. Deliver a single, punchy roast (3-6 sentences) of the described user based on the details given. Keep it playful, spicy but never hateful or discriminatory. End with a small compliment to soften the blow. DO NOT output any thoughts or plans, just the roast.',
+    vibe: 'You are a fun, perceptive personality reader in a Discord bot. Based on the user profile details, give them a vibe check in 3-5 punchy sentences. Be playful and insightful. Do not be mean. DO NOT output any thoughts or plans, just the vibe check.',
+    tldr: 'You are a concise Discord chat summariser. Summarise the provided chat history in a clear, punchy bullet list. Focus on topics discussed, notable moments, and overall vibe. Keep it to 5-10 bullets max. DO NOT output any thoughts or plans, just the summary.',
   };
 
   return `${modeInstructions[mode] ?? modeInstructions.chat}
@@ -1041,6 +1061,7 @@ ENVIRONMENT
 - Discord markdown is supported: **bold**, *italic*, \`code\`, \`\`\`blocks\`\`\`, > quotes, ### headings, - lists, ||spoilers||
 - Keep responses concise enough for a few Discord messages.
 - Do NOT wrap your whole reply in a code block unless the user specifically asks.
+- CRITICAL: Never write out a plan, thought process, or internal reasoning. Only generate the exact text that the user should see.
 
 RATE LIMITS
 ${rateLimitNote}
