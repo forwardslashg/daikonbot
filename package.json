@@ -19,6 +19,7 @@
     "@google/generative-ai": "^0.24.1",
     "discord.js": "^14.17.3",
     "dotenv": "^16.4.7",
+    "isolated-vm": "^6.1.2",
     "openai": "^4.104.0"
   }
 }

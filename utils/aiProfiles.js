@@ -4,6 +4,8 @@ const { join } = require('path');
 const DATA_DIR = join(__dirname, '..', 'data');
 const AI_PROFILES_FILE = join(DATA_DIR, 'ai-profiles.json');
 
+const VALID_MODES = ['chat', 'roast', 'vibe', 'tldr', 'unfiltered', 'unfiltered+'];
+
 const DEFAULT_PROFILES = {
   users: {},
 };
@@ -53,7 +55,6 @@ function sanitizeAniListUsername(username) {
   const value = String(username ?? '').trim();
   if (!value) return null;
 
-  // AniList usernames are 2-20 chars and typically alphanumeric/_
   if (!/^[A-Za-z0-9_]{2,20}$/.test(value)) return null;
   return value;
 }
@@ -75,14 +76,17 @@ function getUserMode(userId) {
 }
 
 function setUserMode(userId, mode) {
+  const normalized = String(mode ?? '').toLowerCase();
+  if (!VALID_MODES.includes(normalized)) throw new Error(`Invalid mode "${mode}". Valid: ${VALID_MODES.join(', ')}`);
+
   const profiles = ensureLoaded();
   profiles.users[userId] = {
     ...(profiles.users[userId] ?? {}),
-    mode: mode,
+    mode: normalized,
     updatedAt: Date.now(),
   };
   save();
-  return mode;
+  return normalized;
 }
 
 function setAniListUsername(userId, username) {
@@ -115,6 +119,59 @@ function clearAniListUsername(userId) {
   return true;
 }
 
+// ─── Unfiltered+ consent ──────────────────────────────────────────────────────
+function hasUnfilteredPlusConsent(userId) {
+  const profile = getUserProfile(userId);
+  return profile?.unfilteredPlusConsent === true;
+}
+
+function setUnfilteredPlusConsent(userId, consented) {
+  const profiles = ensureLoaded();
+  const existing = profiles.users[userId] ?? {};
+  if (consented) {
+    existing.unfilteredPlusConsent = true;
+    existing.unfilteredPlusConsentedAt = Date.now();
+  } else {
+    delete existing.unfilteredPlusConsent;
+    delete existing.unfilteredPlusConsentedAt;
+  }
+  existing.updatedAt = Date.now();
+  profiles.users[userId] = existing;
+  save();
+}
+
+// ─── Memory notes (persistent facts) ──────────────────────────────────────────
+function getMemoryNotes(userId) {
+  const profile = getUserProfile(userId);
+  return Array.isArray(profile?.memoryNotes) ? profile.memoryNotes : [];
+}
+
+function addMemoryNote(userId, text, source = 'auto') {
+  const profiles = ensureLoaded();
+  const existing = profiles.users[userId] ?? {};
+  if (!Array.isArray(existing.memoryNotes)) existing.memoryNotes = [];
+  existing.memoryNotes.push({
+    text: String(text ?? '').trim().slice(0, 500),
+    source: source === 'auto' ? 'auto' : 'manual',
+    timestamp: Date.now(),
+  });
+  if (existing.memoryNotes.length > 100) {
+    existing.memoryNotes = existing.memoryNotes.slice(-100);
+  }
+  existing.updatedAt = Date.now();
+  profiles.users[userId] = existing;
+  save();
+}
+
+function clearMemoryNotes(userId) {
+  const profiles = ensureLoaded();
+  if (profiles.users[userId]) {
+    delete profiles.users[userId].memoryNotes;
+    profiles.users[userId].updatedAt = Date.now();
+    save();
+  }
+}
+
 module.exports = {
   getUserProfile,
   getAniListUsername,
@@ -123,4 +180,10 @@ module.exports = {
   sanitizeAniListUsername,
   getUserMode,
   setUserMode,
+  VALID_MODES,
+  hasUnfilteredPlusConsent,
+  setUnfilteredPlusConsent,
+  getMemoryNotes,
+  addMemoryNote,
+  clearMemoryNotes,
 };
