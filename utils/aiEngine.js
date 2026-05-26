@@ -57,6 +57,7 @@ const HISTORY_LIMIT = 20;
 
 // Message splitting
 const MAX_CHARS = 1980;
+const STREAM_MAX_LENGTH = 1500; // Above this, skip streaming and send in bulk to avoid Discord limit truncation
 
 // ─── Persistent AI settings ──────────────────────────────────────────────────
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -1170,9 +1171,52 @@ function formatToolCallDisplay(toolName, args) {
   return `${emoji} **${toolName}**${argPreview ? `(${argPreview})` : ''}`;
 }
 
+function buildFinalPayload(text, options = {}) {
+  const { metadataCollector = null, footer = null, buttons = null } = options;
+  const finalParts = [text];
+
+  const detailParts = [];
+  if (metadataCollector?.latencyMs) {
+    detailParts.push(`⏱️ ${(metadataCollector.latencyMs / 1000).toFixed(2)}s`);
+  }
+  if (metadataCollector?.searchQueries?.length) {
+    detailParts.push(`🔍 Searched: ${[...new Set(metadataCollector.searchQueries)].map(q => `"${q}"`).join(', ')}`);
+  }
+  if (metadataCollector?.toolsUsed?.length) {
+    const names = [...new Set(metadataCollector.toolsUsed.map(t => t.name))];
+    detailParts.push(`🛠️ Tools: ${names.join(', ')}`);
+  }
+  if (detailParts.length) {
+    finalParts.push(`-# ${detailParts.join('  ·  ')}`);
+  }
+
+  if (footer) {
+    finalParts.push(footer);
+  }
+
+  const payload = { content: finalParts.join('\n') };
+  if (buttons) payload.components = [buttons];
+  return payload;
+}
+
 async function streamResponse(interaction, text, options = {}) {
   const { isThinking = false, metadataCollector = null, footer = null, buttons = null } = options;
-  const paragraphs = parseParagraphs(text);
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return;
+
+  // Long responses: skip streaming, send in bulk to avoid Discord truncation
+  if (trimmed.length >= STREAM_MAX_LENGTH) {
+    const displayText = isThinking ? `🧠 **Thinking...**\n\`\`\`\n${trimmed}\n\`\`\`` : trimmed;
+    const payload = buildFinalPayload(displayText, { metadataCollector, footer, buttons });
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(payload).catch(() => {});
+    } else {
+      await interaction.reply(payload).catch(() => {});
+    }
+    return;
+  }
+
+  const paragraphs = parseParagraphs(trimmed);
   if (!paragraphs.length) return;
 
   const accumulated = [];
@@ -1193,46 +1237,17 @@ async function streamResponse(interaction, text, options = {}) {
 
     try {
       if (isLast) {
-        // Final message with metadata and buttons
-        const finalParts = [currentContent];
-
-        // Build metadata line
-        const detailParts = [];
-        if (metadataCollector?.latencyMs) {
-          detailParts.push(`⏱️ ${(metadataCollector.latencyMs / 1000).toFixed(2)}s`);
-        }
-        if (metadataCollector?.searchQueries?.length) {
-          detailParts.push(`🔍 Searched: ${[...new Set(metadataCollector.searchQueries)].map(q => `"${q}"`).join(', ')}`);
-        }
-        if (metadataCollector?.toolsUsed?.length) {
-          const names = [...new Set(metadataCollector.toolsUsed.map(t => t.name))];
-          detailParts.push(`🛠️ Tools: ${names.join(', ')}`);
-        }
-        if (detailParts.length) {
-          finalParts.push(`-# ${detailParts.join('  ·  ')}`);
-        }
-
-        if (footer) {
-          finalParts.push(footer);
-        }
-
-        const payload = {
-          content: finalParts.join('\n'),
-        };
-
-        if (buttons) payload.components = [buttons];
+        const payload = buildFinalPayload(currentContent, { metadataCollector, footer, buttons });
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply(payload);
         } else {
           await interaction.reply(payload);
         }
       } else if (i === 0) {
-        // First paragraph - initial edit
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({ content: currentContent }).catch(() => {});
         }
       } else {
-        // Mid paragraphs - update progressively with small delay
         await new Promise((r) => setTimeout(r, 400));
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({ content: currentContent }).catch(() => {});
