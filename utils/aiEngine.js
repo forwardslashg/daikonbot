@@ -840,8 +840,14 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
       try {
         const { finishReason, finishMessage } = candidate;
         console.error(`[GEMINI] finishReason=${finishReason} finishMessage=${finishMessage ?? 'none'}`);
+        console.error(`[GEMINI] safetyRatings=${JSON.stringify(candidate.safetyRatings ?? []).slice(0, 300)}`);
         console.error(`[GEMINI] Raw candidate keys: ${Object.keys(candidate)} content=${JSON.stringify(candidate.content ?? {}).slice(0, 300)}`);
       } catch {}
+    }
+
+    // If finishReason indicates a block (SAFETY, RECITATION, BLOCKLIST, OTHER), return a message
+    if (candidate?.finishReason && ['SAFETY', 'RECITATION', 'BLOCKLIST', 'OTHER'].includes(candidate.finishReason)) {
+      finalText = `*[Response blocked by safety filter (${candidate.finishReason})]*`;
     }
   }
 
