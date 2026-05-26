@@ -41,14 +41,10 @@ const GEMMA_MODEL = 'gemma-4-31b-it';
 
 const PROVIDER_LABELS = {
   gemini: 'Google AI (Gemini/Gemma)',
-  groq: 'Groq (Fast inference)',
-  github: 'GitHub Models (OpenAI + others)',
 };
 
 const PROVIDER_EMOJIS = {
   gemini: '🟡',
-  groq: '⚡',
-  github: '🐙',
 };
 
 function providerLabel(provider) {

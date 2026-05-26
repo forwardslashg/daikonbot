@@ -6,7 +6,6 @@
 
 const { ChannelType } = require('discord.js');
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
-const OpenAI = require('openai');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 
@@ -15,77 +14,29 @@ const OWNER_ID = '1470267547789033523';
 
 const AI_PROVIDERS = {
   GEMINI: 'gemini',
-  GROQ: 'groq',
-  GITHUB_MODELS: 'github',
 };
 
 const PROVIDER_MODELS = {
   [AI_PROVIDERS.GEMINI]: [
-    'gemini-3-flash-preview',
-    'gemini-3.1-pro-preview',
-    'gemini-3.5-flash',
-    'gemini-3.1-pro',
     'gemma-4-31b-it',
-  ],
-  [AI_PROVIDERS.GROQ]: [
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant',
-    'llama-4-scout-17b-16e-instruct',
-    'deepseek-r1-distill-llama-70b',
-    'deepseek-r1-distill-qwen-32b',
-  ],
-  [AI_PROVIDERS.GITHUB_MODELS]: [
-    'openai/gpt-4.1',
-    'openai/gpt-4.1-mini',
-    'openai/gpt-4.1-nano',
-    'openai/gpt-4o',
-    'openai/gpt-4o-mini',
-    'openai/gpt-5',
-    'openai/gpt-5-chat',
-    'openai/gpt-5-mini',
-    'openai/gpt-5-nano',
-    'openai/o1-mini',
-    'openai/o3-mini',
-    'meta/llama-3.3-70b-instruct',
-    'cohere/command-r-plus',
-    'mistral/mistral-large',
-    'microsoft/phi-4',
+    'gemini-3.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.1-pro',
+    'gemini-3.1-pro-preview',
   ],
 };
 
 const MODEL_CREDIT_COST = {
-  'gemini-3-flash-preview': 1,
-  'gemini-3.1-pro-preview': 3,
-  'gemini-3.5-flash': 1,
-  'gemini-3.1-pro': 3,
   'gemma-4-31b-it': 4,
-  'llama-3.3-70b-versatile': 2,
-  'llama-3.1-8b-instant': 1,
-  'llama-4-scout-17b-16e-instruct': 1,
-  'deepseek-r1-distill-llama-70b': 2,
-  'deepseek-r1-distill-qwen-32b': 2,
-  'openai/gpt-4.1': 3,
-  'openai/gpt-4.1-mini': 2,
-  'openai/gpt-4.1-nano': 1,
-  'openai/gpt-4o': 3,
-  'openai/gpt-4o-mini': 2,
-  'openai/gpt-5': 4,
-  'openai/gpt-5-chat': 3,
-  'openai/gpt-5-mini': 2,
-  'openai/gpt-5-nano': 1,
-  'openai/o1-mini': 3,
-  'openai/o3-mini': 3,
-  'meta/llama-3.3-70b-instruct': 2,
-  'cohere/command-r-plus': 3,
-  'mistral/mistral-large': 3,
-  'microsoft/phi-4': 2,
+  'gemini-3.5-flash': 1,
+  'gemini-3-flash-preview': 1,
+  'gemini-3.1-pro': 3,
+  'gemini-3.1-pro-preview': 3,
 };
 
 const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
 const DEFAULT_MODEL_BY_PROVIDER = {
   [AI_PROVIDERS.GEMINI]: 'gemma-4-31b-it',
-  [AI_PROVIDERS.GROQ]: 'llama-3.3-70b-versatile',
-  [AI_PROVIDERS.GITHUB_MODELS]: 'openai/gpt-4o-mini',
 };
 
 // Backward-compatible export name used by other files.
@@ -870,119 +821,6 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   return sanitizeAIOutput(finalText);
 }
 
-async function callGroq(modelName, systemInstruction, userMessage, history = [], options = {}) {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY is missing.');
-  }
-
-  const messages = [
-    { role: 'system', content: systemInstruction },
-  ];
-
-  for (const item of history) {
-    const content = historyText(item);
-    if (!content) continue;
-    messages.push({ role: item.role === 'model' ? 'assistant' : 'user', content });
-  }
-
-  messages.push({ role: 'user', content: userMessage });
-
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: modelName,
-      temperature: 0.7,
-      messages,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Groq API error (${response.status}): ${text.slice(0, 500)}`);
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-
-  if (options.metadataCollector && content) {
-    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/i);
-    if (thinkMatch) {
-      options.metadataCollector.thought += thinkMatch[1].trim();
-    }
-  }
-
-  const cleaned = content?.replace(/<think>[\s\S]*?<\/think>/g, '') ?? '';
-  return sanitizeAIOutput(cleaned);
-}
-
-async function callGitHubModels(modelName, systemInstruction, userMessage, history = [], options = {}) {
-  const token = process.env.GITHUB_MODELS_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) {
-    throw new Error('GITHUB_MODELS_TOKEN (or GITHUB_TOKEN) is missing.');
-  }
-
-  const client = new OpenAI({
-    apiKey: token,
-    baseURL: 'https://models.github.ai/inference',
-  });
-
-  const isThinking = isThinkingModel('github', modelName);
-  const messages = [];
-
-  if (isThinking) {
-    let prepended = false;
-    for (const item of history) {
-      const content = historyText(item);
-      if (!content) continue;
-      if (item.role === 'user' && !prepended) {
-        messages.push({ role: 'user', content: `${systemInstruction}\n\n${content}` });
-        prepended = true;
-      } else {
-        messages.push({ role: item.role === 'model' ? 'assistant' : 'user', content });
-      }
-    }
-    if (!prepended) {
-      messages.push({ role: 'user', content: `${systemInstruction}\n\n${userMessage}` });
-    } else {
-      messages.push({ role: 'user', content: userMessage });
-    }
-  } else {
-    messages.push({ role: 'system', content: systemInstruction });
-    for (const item of history) {
-      const content = historyText(item);
-      if (!content) continue;
-      messages.push({ role: item.role === 'model' ? 'assistant' : 'user', content });
-    }
-    messages.push({ role: 'user', content: userMessage });
-  }
-
-  const payload = {
-    model: modelName,
-    messages,
-  };
-
-  if (!isThinking) {
-    payload.temperature = 0.7;
-  }
-
-  const response = await client.chat.completions.create(payload);
-  const content = response?.choices?.[0]?.message?.content;
-
-  if (options.metadataCollector && content) {
-    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/i);
-    if (thinkMatch) {
-      options.metadataCollector.thought += thinkMatch[1].trim();
-    }
-  }
-
-  const cleaned = content?.replace(/<think>[\s\S]*?<\/think>/g, '') ?? '';
-  return sanitizeAIOutput(cleaned);
-}
-
 // ─── Unified AI caller ────────────────────────────────────────────────────────
 /**
  * Call configured AI provider with optional multi-turn history.
@@ -1006,10 +844,6 @@ async function callAI(systemInstruction, userMessage, history = [], options = {}
   try {
     if (selection.provider === AI_PROVIDERS.GEMINI) {
       result = await callGemini(selection.model, systemInstruction, userMessage, history, options);
-    } else if (selection.provider === AI_PROVIDERS.GROQ) {
-      result = await callGroq(selection.model, systemInstruction, userMessage, history, options);
-    } else if (selection.provider === AI_PROVIDERS.GITHUB_MODELS) {
-      result = await callGitHubModels(selection.model, systemInstruction, userMessage, history, options);
     } else {
       throw new Error(`Unsupported AI provider: ${selection.provider}`);
     }
@@ -1368,9 +1202,8 @@ async function streamResponse(interaction, text, options = {}) {
 // ─── Fallback helpers ─────────────────────────────────────────────────────────
 const FALLBACK_CHAIN = [
   { provider: AI_PROVIDERS.GEMINI, model: 'gemma-4-31b-it' },
+  { provider: AI_PROVIDERS.GEMINI, model: 'gemini-3.5-flash' },
   { provider: AI_PROVIDERS.GEMINI, model: 'gemini-3-flash-preview' },
-  { provider: AI_PROVIDERS.GROQ, model: 'llama-3.3-70b-versatile' },
-  { provider: AI_PROVIDERS.GITHUB_MODELS, model: 'openai/gpt-4o-mini' },
 ];
 
 async function callAIWithFallback(systemInstruction, userMessage, history = [], options = {}) {
