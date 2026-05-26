@@ -723,33 +723,22 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
       return;
     }
 
-    for (let i = 0; i < chunks.length; i++) {
-      const isLast = i === chunks.length - 1;
-      if (!isLast) {
-        await sendWithRetry(() =>
-          interaction[i === 0 ? send : 'followUp']({ content: chunks[i], components: [] }),
-        );
-        continue;
-      }
+    for (let i = 0; i < chunks.length - 1; i++) {
+      await sendWithRetry(() =>
+        interaction[i === 0 ? send : 'followUp']({ content: chunks[i], components: [] }),
+      );
+    }
 
-      try {
-        const isThinking = isThinkingModel(usedSelection?.provider ?? selection.provider, usedSelection?.model ?? selection.model);
-        await streamResponse(interaction, chunks[i], {
-          isThinking,
-          metadataCollector,
-          footer,
-          buttons,
-        });
-      } catch (err) {
-        console.error('[AI V2 component error]', err);
-        const plainFooter = buildPlainMetadataFooter(userId, footer, metadataCollector);
-        await sendWithRetry(() =>
-          interaction.followUp({
-            content: plainFooter ? `${chunks[i]}\n${plainFooter}` : chunks[i],
-            components: [buttons],
-          }),
-        );
-      }
+    // Last chunk: always followUp (never editReply) to preserve previous messages
+    {
+      const last = chunks[chunks.length - 1];
+      const plainFooter = buildPlainMetadataFooter(userId, footer, metadataCollector);
+      await sendWithRetry(() =>
+        interaction.followUp({
+          content: plainFooter ? `${last}\n${plainFooter}` : last,
+          components: [buttons],
+        }),
+      );
     }
 
     // Auto-extract memory notes from conversation (every 3 turns)
