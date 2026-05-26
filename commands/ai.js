@@ -454,6 +454,8 @@ function resolveAniListUsername(userId, args) {
 }
 
 async function executeAITool(name, args, userId, interaction) {
+  console.error(`[TOOL] Called: ${name} args=${JSON.stringify(args ?? {}).slice(0, 300)}`);
+
   const toolState = args && typeof args.__toolState === 'object' ? args.__toolState : null;
 
   if (toolState) {
@@ -556,9 +558,11 @@ async function executeAITool(name, args, userId, interaction) {
     const code = String(args.code ?? '').trim();
     if (!code) throw new Error('JavaScript code is required.');
     const result = await executeJavaScript(code);
+    console.error(`[TOOL] Result for ${name}:`, JSON.stringify(result).slice(0, 300));
     return result;
   }
 
+  console.error(`[TOOL] Unknown tool: ${name}`);
   throw new Error(`Unknown tool: ${name}`);
 }
 
@@ -657,6 +661,10 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     }
 
     if (!text) {
+      console.error(`[AI_CHAT] Empty response from AI. userId=${userId} mode=${mode} provider=${selection.provider} model=${selection.model} toolCalls=${metadataCollector.toolsUsed.length}`);
+      if (metadataCollector.toolsUsed.length > 0) {
+        console.error(`[AI_CHAT] Tools used: ${JSON.stringify(metadataCollector.toolsUsed)}`);
+      }
       const method = interaction.deferred || interaction.replied ? 'editReply' : 'reply';
       await interaction[method]({ content: 'The AI returned an empty response. Try rephrasing.', ephemeral: true });
       return;

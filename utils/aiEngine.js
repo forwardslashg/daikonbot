@@ -818,6 +818,10 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   // Also strip <think>...</think> tags if they leak into pure text
   finalText = finalText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
+  if (!finalText && result.response) {
+    console.error(`[GEMINI] Empty response text. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 100)}`);
+  }
+
   return sanitizeAIOutput(finalText);
 }
 
@@ -936,11 +940,21 @@ async function callAIWithTools(systemInstruction, userMessage, history = [], opt
     const envelope = extractToolEnvelope(output);
 
     if (!envelope || !envelope.tool || toolCalls >= maxToolCalls) {
+      if (!output || !output.trim()) {
+        console.error(`[AI_TOOLS] Empty response from AI. envelope=${JSON.stringify(envelope)} toolCalls=${toolCalls} max=${maxToolCalls}`);
+        console.error(`[AI_TOOLS] Raw output: ${JSON.stringify(output).slice(0, 500)}`);
+      }
+      if (!envelope && output && output.trim()) {
+        console.error(`[AI_TOOLS] No tool envelope in output (first 200 chars): ${output.slice(0, 200).replace(/\n/g, '\\n')}`);
+      }
       return { text: output, toolCalls };
     }
 
+    console.error(`[AI_TOOLS] Detected tool call: ${envelope.tool} args=${JSON.stringify(envelope.arguments ?? {}).slice(0, 200)}`);
+
     const toolInfo = toolMap.get(envelope.tool);
     if (!toolInfo || typeof executeTool !== 'function') {
+      console.error(`[AI_TOOLS] Tool "${envelope.tool}" not found in toolMap or executeTool not provided`);
       return { text: output, toolCalls };
     }
 
@@ -951,11 +965,13 @@ async function callAIWithTools(systemInstruction, userMessage, history = [], opt
       }
       toolResult = await executeTool(envelope.tool, envelope.arguments ?? {});
       toolCalls += 1;
+      console.error(`[AI_TOOLS] Tool ${envelope.tool} executed OK (call #${toolCalls}): ${JSON.stringify(toolResult).slice(0, 200)}`);
     } catch (err) {
       toolResult = {
         error: String(err?.message ?? err ?? 'Tool execution failed'),
       };
       toolCalls += 1;
+      console.error(`[AI_TOOLS] Tool ${envelope.tool} FAILED (call #${toolCalls}): ${err?.message ?? 'unknown'}`);
     }
 
     workingHistory.push({ role: 'model', parts: [{ text: output }] });

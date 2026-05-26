@@ -30,7 +30,8 @@ async function executeJavaScript(code) {
     return { success: false, error: 'No code provided.' };
   }
 
-  // Block dangerous patterns before execution
+  console.error(`[SANDBOX] Executing code (${trimmedCode.length} chars): ${trimmedCode.slice(0, 200)}`);
+
   const blockRegexes = [
     /require\s*\(/,
     /import\s*\(/,
@@ -118,6 +119,7 @@ async function executeJavaScript(code) {
   if (logs.length > 0) response.logs = logs.join('\n');
   if (error) response.error = error;
 
+  console.error(`[SANDBOX] Result: success=${response.success} result=${response.result?.slice(0, 100) ?? 'none'} error=${response.error?.slice(0, 100) ?? 'none'} logs=${(response.logs ?? '').length > 0}`);
   return response;
 }
 
