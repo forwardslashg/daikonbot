@@ -295,16 +295,6 @@ function buildComponentsV2Payload(text, userId, turns, footer, buttonContext = {
   ];
 
   if (metadata) {
-    if (metadata.thought && metadata.thought.trim()) {
-      containerComponents.push(
-        { type: 14, spacing: 1 },
-        {
-          type: 10,
-          content: `*💭 Thought Process:*\n> ||${metadata.thought.trim().replace(/\n/g, '\n> ')}||`
-        }
-      );
-    }
-
     const detailParts = [];
     const selection = getEffectiveAISelection(userId);
     const modelCost = getModelCreditCost(selection.provider, selection.model);
@@ -424,11 +414,6 @@ function buildPlainMetadataFooter(userId, footer, metadata) {
   if (!metadata) return footer;
 
   const lines = [];
-  
-  if (metadata.thought && metadata.thought.trim()) {
-    lines.push(`*💭 Thought Process:*\n> ||${metadata.thought.trim().replace(/\n/g, '\n> ')}||`);
-  }
-
   const detailParts = [];
   const selection = getEffectiveAISelection(userId);
   const modelCost = getModelCreditCost(selection.provider, selection.model);
@@ -636,7 +621,9 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     let geminiRateLimited = false;
     let retryDelaySeconds = null;
 
-    const { text, selection: usedSelection } = await sendWithRetry(() =>
+    const REFUSAL_PATTERNS = /i (can'?t|cannot|won'?t|will not|refuse|am not able|do not feel comfortable|am sorry|must decline|cannot comply|unable to generate|can't help with|not appropriate|against.*(policy|guidelines|rules)|violates|can't do that|i'm not able)/i;
+
+    let { text, selection: usedSelection } = await sendWithRetry(() =>
       callAIWithToolsFallback(sysInstruction, fullContext, priorHistory, {
         userId,
         provider: selection.provider,
@@ -663,6 +650,31 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
       },
     },
     );
+
+    // In unfiltered+ mode, detect AI refusals and auto-fallback to a different provider
+    if (mode === 'unfiltered+' && text && REFUSAL_PATTERNS.test(text)) {
+      const fallbackModel = { provider: AI_PROVIDERS.GROQ, model: 'llama-3.3-70b-versatile' };
+      if (usedSelection?.provider !== fallbackModel.provider) {
+        try {
+          const retryResult = await callAIWithTools(sysInstruction, fullContext, priorHistory, {
+            userId,
+            provider: fallbackModel.provider,
+            model: fallbackModel.model,
+            maxToolCalls: 4,
+            metadataCollector,
+          }, AI_TOOLS, (name, args) =>
+            executeAITool(name, { ...(args ?? {}), __toolState: toolState }, userId, interaction),
+          );
+          if (retryResult.text && !REFUSAL_PATTERNS.test(retryResult.text)) {
+            text = retryResult.text;
+            usedSelection = fallbackModel;
+            if (metadataCollector) metadataCollector.fallbackUsed = `${fallbackModel.provider}:${fallbackModel.model} (refusal detected)`;
+          }
+        } catch {
+          // Keep original text on fallback failure
+        }
+      }
+    }
 
     if (!text) {
       const method = interaction.deferred || interaction.replied ? 'editReply' : 'reply';
@@ -934,8 +946,10 @@ async function handleButton(interaction) {
   if (action === 'ai_unfiltered_consent') {
     setUnfilteredPlusConsent(targetUserId, true);
     setUserMode(targetUserId, 'unfiltered+');
+    // Auto-switch to Groq Llama for best unfiltered results (Gemini may still refuse)
+    setUserAISelection(targetUserId, AI_PROVIDERS.GROQ, 'llama-3.3-70b-versatile');
     await interaction.reply({
-      content: '✅ **You have enabled Unfiltered+ mode.**\n\n⚠️ The AI will now respond without any filters. This includes profanity, slurs, and any content you request. Use responsibly.\n\nType `/ai` to start a conversation in this mode.',
+      content: '✅ **Unfiltered+ enabled.**\n\n⚠️ No filters, no refusals — the AI will generate anything requested.\n\nAuto-switched to **Groq Llama 3.3 70B** (best for unfiltered output). Use `/aimodel` to change provider anytime.\n\nType `/ai` to start.',
       ephemeral: true,
     });
     return;
