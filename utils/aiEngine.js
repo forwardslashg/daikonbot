@@ -799,10 +799,13 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
       }
       if (part.text) finalText += part.text;
     }
-  } else {
-    finalText = result.response.text();
   }
-  
+
+  // Fallback: use response.text() if parts extraction yielded nothing
+  if (!finalText) {
+    try { finalText = result.response.text(); } catch {}
+  }
+
   if (options.metadataCollector) {
     const thinkMatch = finalText.match(/<think>([\s\S]*?)<\/think>/i);
     if (thinkMatch) {
@@ -815,11 +818,15 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
     }
   }
 
-  // Also strip <think>...</think> tags if they leak into pure text
   finalText = finalText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
   if (!finalText && result.response) {
-    console.error(`[GEMINI] Empty response text. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 100)}`);
+    console.error(`[GEMINI] Empty response. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 80)}`);
+    if (candidate) {
+      try {
+        console.error(`[GEMINI] Raw candidate keys: ${Object.keys(candidate)} content=${JSON.stringify(candidate.content ?? {}).slice(0, 300)}`);
+      } catch {}
+    }
   }
 
   return sanitizeAIOutput(finalText);
