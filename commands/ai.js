@@ -69,9 +69,13 @@ const BTN_ANILIST_RECS = (uid) => `ai_anilist_recs:${uid}`;
 const BTN_SWITCHMODEL = (uid) => `ai_switchmodel:${uid}`;
 const BTN_UNFILTERED_CONSENT = (uid) => `ai_unfiltered_consent:${uid}`;
 const BTN_UNFILTERED_DECLINE = (uid) => `ai_unfiltered_decline:${uid}`;
+const BTN_RETRY = (uid) => `ai_retry:${uid}`;
 
 const MODAL_FOLLOWUP_ID = (uid) => `ai_modal_followup:${uid}`;
 const MODAL_ANILIST_ID = (uid, mode) => `ai_modal_anilist:${uid}:${mode}`;
+
+// Stores last user prompt for retry button
+const lastPrompts = new Map();
 
 const COMPONENTS_V2_FLAG = 1 << 15;
 const GEMMA_MODEL = 'gemma-4-31b-it';
@@ -157,6 +161,11 @@ function makeButtons(userId, turnCount) {
 
 function makeRecoveryButtons(userId) {
   return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(BTN_RETRY(userId))
+      .setLabel('Retry')
+      .setEmoji('🔄')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(BTN_NEWTOPIC(userId))
       .setLabel('Reset chat')
@@ -621,6 +630,9 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
 
   const fullContext = `${contextBlock}${memoryContext}${compressedMemory}${consentNote}`;
 
+  // Save prompt for retry button
+  lastPrompts.set(userId, { promptText, fullContext, sysInstruction });
+
   try {
     let geminiRateLimited = false;
     let retryDelaySeconds = null;
@@ -679,7 +691,8 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
       finalText += `\n\n-# ⚠️ Primary model failed, fell back to \`${metadataCollector.fallbackUsed}\``;
     }
 
-    const includeAniList = askedAniList || toolState.usedAniListTool || toolState.needsAniListAccess;
+    const isErrorMessage = text.startsWith('*[') && text.includes(']*');
+    const includeAniList = !isErrorMessage && (askedAniList || toolState.usedAniListTool || toolState.needsAniListAccess);
     const needsAniListAccess = includeAniList && (!linkedAniList || toolState.needsAniListAccess);
 
     if (needsAniListAccess) {
@@ -892,6 +905,17 @@ async function handleButton(interaction) {
 
     await deferAndNotifyThinking(interaction, targetUserId);
     await runAIChat(interaction, `Use AniList tools to inspect ${savedUsername}'s current anime and suggest 8 anime recommendations with short reasons.`, { isFollowUp: true });
+    return;
+  }
+
+  if (action === 'ai_retry') {
+    const stored = lastPrompts.get(targetUserId);
+    if (!stored) {
+      await interaction.reply({ content: 'No previous prompt found to retry.', ephemeral: true });
+      return;
+    }
+    await deferAndNotifyThinking(interaction, targetUserId);
+    await runAIChat(interaction, stored.promptText, { isFollowUp: false });
     return;
   }
 

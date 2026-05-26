@@ -802,7 +802,10 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
       return `*[Content blocked by safety filter (${blockReason})]*`;
     }
 
-    // Non-critical API errors
+    // Server errors (500+) — propagate for retry
+    if (err?.status >= 500) throw err;
+
+    // Other API errors — return safe message
     console.error(`[GEMINI] API error: ${err?.message ?? err}`);
     return `*[AI temporarily unavailable: ${err?.message ?? 'unknown error'}]*`;
   }
@@ -1330,9 +1333,9 @@ async function callAIWithFallback(systemInstruction, userMessage, history = [], 
         throw err;
       }
 
-      // Only continue if it's a server/rate-limit error
+      // Re-throw all errors — only fallback on rate limits
       const status = Number(err?.status);
-      if (status >= 400 && status < 500 && status !== 429) {
+      if (status !== 429) {
         throw err;
       }
     }
@@ -1387,9 +1390,9 @@ async function callAIWithToolsFallback(systemInstruction, userMessage, history =
         throw err;
       }
 
-      // Only continue on 429/5xx server errors, not 4xx client errors
+      // Re-throw all errors — only fallback on rate limits
       const status = Number(err?.status);
-      if (status >= 400 && status < 500 && status !== 429) {
+      if (status !== 429) {
         throw err;
       }
     }
