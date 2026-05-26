@@ -651,29 +651,9 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
     },
     );
 
-    // In unfiltered+ mode, detect AI refusals and auto-fallback to a different provider
+    // In unfiltered+ mode, detect AI refusals and note it
     if (mode === 'unfiltered+' && text && REFUSAL_PATTERNS.test(text)) {
-      const fallbackModel = { provider: AI_PROVIDERS.GROQ, model: 'llama-3.3-70b-versatile' };
-      if (usedSelection?.provider !== fallbackModel.provider) {
-        try {
-          const retryResult = await callAIWithTools(sysInstruction, fullContext, priorHistory, {
-            userId,
-            provider: fallbackModel.provider,
-            model: fallbackModel.model,
-            maxToolCalls: 4,
-            metadataCollector,
-          }, AI_TOOLS, (name, args) =>
-            executeAITool(name, { ...(args ?? {}), __toolState: toolState }, userId, interaction),
-          );
-          if (retryResult.text && !REFUSAL_PATTERNS.test(retryResult.text)) {
-            text = retryResult.text;
-            usedSelection = fallbackModel;
-            if (metadataCollector) metadataCollector.fallbackUsed = `${fallbackModel.provider}:${fallbackModel.model} (refusal detected)`;
-          }
-        } catch {
-          // Keep original text on fallback failure
-        }
-      }
+      text = `*⚠️ The model refused this request.* Try rephrasing.\n\n---\n${text}`;
     }
 
     if (!text) {
@@ -946,10 +926,8 @@ async function handleButton(interaction) {
   if (action === 'ai_unfiltered_consent') {
     setUnfilteredPlusConsent(targetUserId, true);
     setUserMode(targetUserId, 'unfiltered+');
-    // Auto-switch to Groq Llama for best unfiltered results (Gemini may still refuse)
-    setUserAISelection(targetUserId, AI_PROVIDERS.GROQ, 'llama-3.3-70b-versatile');
     await interaction.reply({
-      content: '✅ **Unfiltered+ enabled.**\n\n⚠️ No filters, no refusals — the AI will generate anything requested.\n\nAuto-switched to **Groq Llama 3.3 70B** (best for unfiltered output). Use `/aimodel` to change provider anytime.\n\nType `/ai` to start.',
+      content: '✅ **Unfiltered+ enabled.**\n\n⚠️ The AI will attempt to generate anything requested. Some models may still refuse due to their training — if so, try rephrasing or use `/aimodel` to switch to a different provider.\n\nType `/ai` to start.',
       ephemeral: true,
     });
     return;

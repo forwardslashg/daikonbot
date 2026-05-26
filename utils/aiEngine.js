@@ -1367,6 +1367,7 @@ async function streamResponse(interaction, text, options = {}) {
 
 // ─── Fallback helpers ─────────────────────────────────────────────────────────
 const FALLBACK_CHAIN = [
+  { provider: AI_PROVIDERS.GEMINI, model: 'gemma-4-31b-it' },
   { provider: AI_PROVIDERS.GEMINI, model: 'gemini-3-flash-preview' },
   { provider: AI_PROVIDERS.GROQ, model: 'llama-3.3-70b-versatile' },
   { provider: AI_PROVIDERS.GITHUB_MODELS, model: 'openai/gpt-4o-mini' },
