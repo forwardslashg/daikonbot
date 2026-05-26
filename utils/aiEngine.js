@@ -1032,7 +1032,7 @@ async function callAIWithTools(systemInstruction, userMessage, history = [], opt
       console.error(`[AI_TOOLS] Tool ${envelope.tool} FAILED (call #${toolCalls}): ${err?.message ?? 'unknown'}`);
     }
 
-    workingHistory.push({ role: 'model', parts: [{ text: output }] });
+    workingHistory.push({ role: 'model', parts: [{ text: `[Tool call: ${envelope.tool}]` }] });
     workingHistory.push({
       role: 'user',
       parts: [{
