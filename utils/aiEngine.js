@@ -838,6 +838,8 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
     console.error(`[GEMINI] Empty response. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 80)}`);
     if (candidate) {
       try {
+        const { finishReason, finishMessage } = candidate;
+        console.error(`[GEMINI] finishReason=${finishReason} finishMessage=${finishMessage ?? 'none'}`);
         console.error(`[GEMINI] Raw candidate keys: ${Object.keys(candidate)} content=${JSON.stringify(candidate.content ?? {}).slice(0, 300)}`);
       } catch {}
     }
