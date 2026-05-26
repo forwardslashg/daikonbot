@@ -785,7 +785,27 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   const model = genAI.getGenerativeModel(generationConfig);
 
   const chat = model.startChat({ history });
-  const result = await chat.sendMessage(userMessage);
+
+  let result;
+  try {
+    result = await chat.sendMessage(userMessage);
+  } catch (err) {
+    // Rate limits should propagate for retry logic
+    if (err?.status === 429) throw err;
+
+    // Safety blocks — return a message instead of falling back to a worse model
+    const blockReason = err?.response?.candidates?.[0]?.finishReason
+      ?? err?.response?.promptFeedback?.blockReason
+      ?? '';
+    if (blockReason) {
+      console.error(`[GEMINI] Blocked response (${blockReason}): model=${modelName}`);
+      return `*[Content blocked by safety filter (${blockReason})]*`;
+    }
+
+    // Non-critical API errors
+    console.error(`[GEMINI] API error: ${err?.message ?? err}`);
+    return `*[AI temporarily unavailable: ${err?.message ?? 'unknown error'}]*`;
+  }
   
   // Extract text excluding thought parts
   let finalText = '';
@@ -837,6 +857,14 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
 
   if (!finalText && result.response) {
     console.error(`[GEMINI] Empty response. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 80)}`);
+
+    // Check prompt-level block (no candidates at all)
+    const promptBlock = result.response.promptFeedback?.blockReason;
+    if (promptBlock) {
+      console.error(`[GEMINI] promptFeedback.blockReason=${promptBlock}`);
+      finalText = `*[Content blocked by safety filter (${promptBlock})]*`;
+    }
+
     if (candidate) {
       try {
         const { finishReason, finishMessage } = candidate;
@@ -844,11 +872,11 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
         console.error(`[GEMINI] safetyRatings=${JSON.stringify(candidate.safetyRatings ?? []).slice(0, 300)}`);
         console.error(`[GEMINI] Raw candidate keys: ${Object.keys(candidate)} content=${JSON.stringify(candidate.content ?? {}).slice(0, 300)}`);
       } catch {}
-    }
 
-    // If finishReason indicates a block (SAFETY, RECITATION, BLOCKLIST, OTHER), return a message
-    if (candidate?.finishReason && ['SAFETY', 'RECITATION', 'BLOCKLIST', 'OTHER'].includes(candidate.finishReason)) {
-      finalText = `*[Response blocked by safety filter (${candidate.finishReason})]*`;
+      // Candidate-level block (SAFETY, RECITATION, BLOCKLIST, OTHER)
+      if (candidate.finishReason && ['SAFETY', 'RECITATION', 'BLOCKLIST', 'OTHER'].includes(candidate.finishReason)) {
+        finalText = `*[Content blocked by safety filter (${candidate.finishReason})]*`;
+      }
     }
   }
 
