@@ -788,6 +788,7 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
   
   // Extract text excluding thought parts
   let finalText = '';
+  let nativeFunctionCall = null;
   const candidate = result.response.candidates?.[0];
   if (candidate?.content?.parts) {
     for (const part of candidate.content.parts) {
@@ -797,8 +798,21 @@ async function callGemini(modelName, systemInstruction, userMessage, history = [
         }
         continue; // Skip thought parts
       }
-      if (part.text) finalText += part.text;
+      if (part.text) {
+        finalText += part.text;
+      } else if (part.functionCall && !nativeFunctionCall) {
+        // Gemini native function call — convert to text envelope for callAIWithTools
+        const rawName = part.functionCall.name ?? '';
+        const toolName = rawName.replace(/^google:/, '');
+        nativeFunctionCall = { tool: toolName, arguments: part.functionCall.args ?? {} };
+      }
     }
+  }
+
+  // Convert native function call to text envelope
+  if (!finalText && nativeFunctionCall) {
+    finalText = JSON.stringify(nativeFunctionCall);
+    console.error(`[GEMINI] Converted native functionCall part to envelope: ${finalText.slice(0, 200)}`);
   }
 
   // Fallback: use response.text() if parts extraction yielded nothing
