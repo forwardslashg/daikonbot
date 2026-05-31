@@ -1,11 +1,14 @@
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
-const { readdirSync } = require('fs');
-const { join } = require('path');
-require('dotenv').config();
-const { isOwner } = require('./utils/aiEngine');
+const { Client, Collection, GatewayIntentBits } = require("discord.js");
+const { readdirSync } = require("fs");
+const { join } = require("path");
+require("dotenv").config();
+const { isOwner } = require("./utils/aiEngine");
+const { startReminderScheduler } = require("./utils/reminders");
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error('Missing DISCORD_TOKEN. Set it in your environment or .env file.');
+  console.error(
+    "Missing DISCORD_TOKEN. Set it in your environment or .env file.",
+  );
   process.exit(1);
 }
 
@@ -21,7 +24,10 @@ function checkGlobalRateLimit(userId) {
   const bucket = _globalCmdBuckets.get(userId);
 
   if (!bucket || now >= bucket.resetAt) {
-    _globalCmdBuckets.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    _globalCmdBuckets.set(userId, {
+      count: 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS,
+    });
     return { allowed: true };
   }
 
@@ -55,24 +61,26 @@ async function shutdown(signal) {
   }
 }
 
-process.on('SIGINT', () => void shutdown('SIGINT'));
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-process.on('unhandledRejection', (reason) => {
-  console.error('[UNHANDLED_REJECTION]', reason);
+process.on("unhandledRejection", (reason) => {
+  console.error("[UNHANDLED_REJECTION]", reason);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('[UNCAUGHT_EXCEPTION]', err);
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT_EXCEPTION]", err);
 });
 
 // ─── Load commands ────────────────────────────────────────────────────────────
 client.commands = new Collection();
 
-const commandFiles = readdirSync(join(__dirname, 'commands')).filter((f) => f.endsWith('.js'));
+const commandFiles = readdirSync(join(__dirname, "commands")).filter((f) =>
+  f.endsWith(".js"),
+);
 
 for (const file of commandFiles) {
-  const command = require(join(__dirname, 'commands', file));
+  const command = require(join(__dirname, "commands", file));
 
   if (!command.data || !command.execute) {
     console.warn(`[WARN] ${file} is missing 'data' or 'execute' — skipping.`);
@@ -84,22 +92,26 @@ for (const file of commandFiles) {
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
-client.once('clientReady', () => {
+client.once("clientReady", () => {
   console.log(`Ready! Logged in as ${client.user.tag}`);
+  startReminderScheduler(client);
 });
 
 // Lazy-load AI interaction handlers (buttons + modals) from the ai command
 function getAICommand() {
-  return client.commands.get('ai');
+  return client.commands.get("ai");
 }
 
 function getAIModelCommand() {
-  return client.commands.get('aimodel');
+  return client.commands.get("aimodel");
 }
 
 async function safeReplyError(interaction, label) {
   console.error(`[ERROR] ${label}:`, ...arguments);
-  const msg = { content: 'Something went wrong while running that command.', ephemeral: true };
+  const msg = {
+    content: "Something went wrong while running that command.",
+    ephemeral: true,
+  };
   try {
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(msg);
@@ -109,7 +121,7 @@ async function safeReplyError(interaction, label) {
   } catch {}
 }
 
-client.on('interactionCreate', async (interaction) => {
+client.on("interactionCreate", async (interaction) => {
   // ── Slash commands ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     const command = client.commands.get(interaction.commandName);
@@ -160,7 +172,9 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isMessageContextMenuCommand()) {
     const command = client.commands.get(interaction.commandName);
     if (!command) {
-      console.warn(`[WARN] Unknown message context menu: ${interaction.commandName}`);
+      console.warn(
+        `[WARN] Unknown message context menu: ${interaction.commandName}`,
+      );
       return;
     }
     const rateCheck = checkGlobalRateLimit(interaction.user.id);
@@ -174,14 +188,18 @@ client.on('interactionCreate', async (interaction) => {
     try {
       await command.execute(interaction);
     } catch (err) {
-      await safeReplyError(interaction, `ctxmsg:${interaction.commandName}`, err);
+      await safeReplyError(
+        interaction,
+        `ctxmsg:${interaction.commandName}`,
+        err,
+      );
     }
     return;
   }
 
   // ── Button interactions ─────────────────────────────────────────────────────
   if (interaction.isButton()) {
-    if (interaction.customId.startsWith('aimodel_')) {
+    if (interaction.customId.startsWith("aimodel_")) {
       const modelCmd = getAIModelCommand();
       if (modelCmd?.handleButton) {
         try {
@@ -195,7 +213,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // AI conversation buttons
-    if (interaction.customId.startsWith('ai_')) {
+    if (interaction.customId.startsWith("ai_")) {
       const aiCmd = getAICommand();
       if (aiCmd?.handleButton) {
         try {
@@ -210,14 +228,18 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── String select menu interactions ────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
-    if (interaction.customId.startsWith('aimodel_')) {
+    if (interaction.customId.startsWith("aimodel_")) {
       const modelCmd = getAIModelCommand();
       if (modelCmd?.handleSelectMenu) {
         try {
           const handled = await modelCmd.handleSelectMenu(interaction);
           if (handled) return;
         } catch (err) {
-          await safeReplyError(interaction, `select:${interaction.customId}`, err);
+          await safeReplyError(
+            interaction,
+            `select:${interaction.customId}`,
+            err,
+          );
           return;
         }
       }
@@ -228,13 +250,17 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── Modal submissions ───────────────────────────────────────────────────────
   if (interaction.isModalSubmit()) {
-    if (interaction.customId.startsWith('ai_modal_')) {
+    if (interaction.customId.startsWith("ai_modal_")) {
       const aiCmd = getAICommand();
       if (aiCmd?.handleModal) {
         try {
           await aiCmd.handleModal(interaction);
         } catch (err) {
-          await safeReplyError(interaction, `modal:${interaction.customId}`, err);
+          await safeReplyError(
+            interaction,
+            `modal:${interaction.customId}`,
+            err,
+          );
         }
       }
     }
