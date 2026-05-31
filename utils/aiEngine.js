@@ -938,6 +938,7 @@ async function callGemini(
       functionCallingConfig: {
         mode: FunctionCallingConfigMode?.AUTO ?? "AUTO",
       },
+      includeServerSideToolInvocations: true,
     };
   }
 
