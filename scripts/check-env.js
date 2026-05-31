@@ -1,23 +1,26 @@
-require('dotenv').config();
+require("dotenv").config();
 
-const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
-const optional = ['GOOGLE_AI_KEY', 'GROQ_API_KEY', 'GITHUB_MODELS_TOKEN', 'GITHUB_TOKEN', 'KLIPY_API_KEY'];
+const required = [
+  "DISCORD_TOKEN",
+  "DISCORD_CLIENT_ID",
+  "GOOGLE_AI_KEY",
+  "APPWRITE_ENDPOINT",
+  "APPWRITE_PROJECT_ID",
+  "APPWRITE_API_KEY",
+];
 
-const missingRequired = required.filter((key) => !process.env[key]);
-const configuredOptional = optional.filter((key) => Boolean(process.env[key]));
+const optional = ["APPWRITE_DATABASE_ID", "NODE_ENV"];
 
-if (missingRequired.length > 0) {
-  console.error('Missing required environment variables:');
-  for (const key of missingRequired) {
-    console.error(`- ${key}`);
-  }
+const missing = required.filter((k) => !process.env[k]);
+
+if (missing.length) {
+  console.error("❌ Missing required environment variables:");
+  for (const k of missing) console.error(`   - ${k}`);
+  console.error("\nCopy .env.example to .env and fill in the values.");
   process.exit(1);
 }
 
-console.log('Required environment variables are present.');
-
-if (configuredOptional.length === 0) {
-  console.warn('No optional provider/API keys configured. Some commands may not work.');
-} else {
-  console.log(`Optional keys configured: ${configuredOptional.join(', ')}`);
+console.log("✅ All required environment variables are present.");
+for (const k of optional) {
+  if (process.env[k]) console.log(`   ${k} = ${process.env[k]}`);
 }

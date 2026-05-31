@@ -1,8 +1,8 @@
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("fs");
-const { join } = require("path");
-
-const DATA_DIR = join(__dirname, "..", "data");
-const AI_PROFILES_FILE = join(DATA_DIR, "ai-profiles.json");
+/**
+ * User AI profiles — backed by Appwrite.
+ * All variable data stored in a single 'data' JSON blob: { mode, anilistUsername, unfilteredConsent, memoryNotes[], persona }
+ */
+const { db, DB_ID, COLLECTIONS, Query, ID } = require("./db");
 
 const VALID_MODES = [
   "chat",
@@ -12,178 +12,142 @@ const VALID_MODES = [
   "unfiltered",
   "unfiltered+",
 ];
+const MAX_MEMORY_NOTES = 150;
+const COL = COLLECTIONS.PROFILES;
 
-const DEFAULT_PROFILES = {
-  users: {},
-};
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
-let _profileCache = null;
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function ensureLoaded() {
-  if (_profileCache) return _profileCache;
-
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  if (!existsSync(AI_PROFILES_FILE)) {
-    _profileCache = clone(DEFAULT_PROFILES);
-    writeFileSync(
-      AI_PROFILES_FILE,
-      JSON.stringify(_profileCache, null, 2),
-      "utf8",
-    );
-    return _profileCache;
-  }
-
+async function _getDoc(userId) {
   try {
-    const raw = readFileSync(AI_PROFILES_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    const users =
-      parsed?.users && typeof parsed.users === "object" ? parsed.users : {};
-    _profileCache = { users };
+    const result = await db.listDocuments(DB_ID, COL, [
+      Query.equal("userId", userId),
+      Query.limit(1),
+    ]);
+    return result.documents[0] ?? null;
   } catch {
-    _profileCache = clone(DEFAULT_PROFILES);
+    return null;
   }
-
-  return _profileCache;
 }
 
-function save() {
-  const profiles = ensureLoaded();
-
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
+async function _upsert(userId, data) {
+  const doc = await _getDoc(userId);
+  const payload = { userId, data: JSON.stringify(data) };
+  if (doc) {
+    return db.updateDocument(DB_ID, COL, doc.$id, payload);
+  } else {
+    return db.createDocument(DB_ID, COL, ID.unique(), payload);
   }
-
-  writeFileSync(AI_PROFILES_FILE, JSON.stringify(profiles, null, 2), "utf8");
 }
+
+function _getData(doc) {
+  if (!doc?.data) return {};
+  try {
+    return JSON.parse(doc.data);
+  } catch {
+    return {};
+  }
+}
+
+// ─── Profile ──────────────────────────────────────────────────────────────────
+
+async function getUserProfile(userId) {
+  const doc = await _getDoc(userId);
+  if (!doc) return null;
+  const d = _getData(doc);
+  return {
+    userId: doc.userId,
+    mode: d.mode ?? "chat",
+    anilistUsername: d.anilistUsername ?? null,
+    unfilteredPlusConsent: d.unfilteredConsent === true,
+    memoryNotes: d.memoryNotes ?? [],
+    persona: d.persona ?? null,
+  };
+}
+
+// ─── AniList ──────────────────────────────────────────────────────────────────
 
 function sanitizeAniListUsername(username) {
   const value = String(username ?? "").trim();
-  if (!value) return null;
-
-  if (!/^[A-Za-z0-9_]{2,20}$/.test(value)) return null;
+  if (!value || !/^[A-Za-z0-9_]{2,20}$/.test(value)) return null;
   return value;
 }
 
-function getUserProfile(userId) {
-  const profiles = ensureLoaded();
-  const profile = profiles.users[userId];
-  return profile ? clone(profile) : null;
+async function getAniListUsername(userId) {
+  const doc = await _getDoc(userId);
+  return _getData(doc).anilistUsername ?? null;
 }
 
-function getAniListUsername(userId) {
-  const profile = getUserProfile(userId);
-  return profile?.anilistUsername ?? null;
-}
-
-function getUserMode(userId) {
-  const profile = getUserProfile(userId);
-  return profile?.mode ?? "chat";
-}
-
-function setUserMode(userId, mode) {
-  const normalized = String(mode ?? "").toLowerCase();
-  if (!VALID_MODES.includes(normalized))
-    throw new Error(`Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}`);
-
-  const profiles = ensureLoaded();
-  profiles.users[userId] = {
-    ...(profiles.users[userId] ?? {}),
-    mode: normalized,
-    updatedAt: Date.now(),
-  };
-  save();
-  return normalized;
-}
-
-function setAniListUsername(userId, username) {
+async function setAniListUsername(userId, username) {
   const sanitized = sanitizeAniListUsername(username);
   if (!sanitized)
     throw new Error(
       "Invalid AniList username. Use 2-20 letters, numbers, or underscore.",
     );
-
-  const profiles = ensureLoaded();
-  profiles.users[userId] = {
-    ...(profiles.users[userId] ?? {}),
-    anilistUsername: sanitized,
-    updatedAt: Date.now(),
-  };
-
-  save();
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  d.anilistUsername = sanitized;
+  await _upsert(userId, d);
   return sanitized;
 }
 
-function clearAniListUsername(userId) {
-  const profiles = ensureLoaded();
-  if (!profiles.users[userId]) return false;
-
-  delete profiles.users[userId].anilistUsername;
-  profiles.users[userId].updatedAt = Date.now();
-
-  if (!Object.keys(profiles.users[userId]).length) {
-    delete profiles.users[userId];
-  }
-
-  save();
+async function clearAniListUsername(userId) {
+  const doc = await _getDoc(userId);
+  if (!doc) return false;
+  const d = _getData(doc);
+  delete d.anilistUsername;
+  await _upsert(userId, d);
   return true;
 }
 
+// ─── Mode ─────────────────────────────────────────────────────────────────────
+
+async function getUserMode(userId) {
+  const doc = await _getDoc(userId);
+  return _getData(doc).mode ?? "chat";
+}
+
+async function setUserMode(userId, mode) {
+  const normalized = String(mode ?? "").toLowerCase();
+  if (!VALID_MODES.includes(normalized))
+    throw new Error(`Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}`);
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  d.mode = normalized;
+  await _upsert(userId, d);
+  return normalized;
+}
+
 // ─── Unfiltered+ consent ──────────────────────────────────────────────────────
-function hasUnfilteredPlusConsent(userId) {
-  const profile = getUserProfile(userId);
-  return profile?.unfilteredPlusConsent === true;
+
+async function hasUnfilteredPlusConsent(userId) {
+  const doc = await _getDoc(userId);
+  return _getData(doc).unfilteredConsent === true;
 }
 
-function setUnfilteredPlusConsent(userId, consented) {
-  const profiles = ensureLoaded();
-  const existing = profiles.users[userId] ?? {};
-  if (consented) {
-    existing.unfilteredPlusConsent = true;
-    existing.unfilteredPlusConsentedAt = Date.now();
-  } else {
-    delete existing.unfilteredPlusConsent;
-    delete existing.unfilteredPlusConsentedAt;
-  }
-  existing.updatedAt = Date.now();
-  profiles.users[userId] = existing;
-  save();
+async function setUnfilteredPlusConsent(userId, consented) {
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  d.unfilteredConsent = consented;
+  await _upsert(userId, d);
 }
 
-// ─── Memory notes (persistent facts) ─────────────────────────────────────────
-// Each note: { text, source: 'auto'|'manual', category: string|null, timestamp }
-const MAX_MEMORY_NOTES = 150;
+// ─── Memory notes ─────────────────────────────────────────────────────────────
 
-function getMemoryNotes(userId) {
-  const profile = getUserProfile(userId);
-  return Array.isArray(profile?.memoryNotes) ? profile.memoryNotes : [];
+async function getMemoryNotes(userId) {
+  const doc = await _getDoc(userId);
+  return _getData(doc).memoryNotes ?? [];
 }
 
-/**
- * Add a persistent memory note for a user.
- * @param {string} userId
- * @param {string} text
- * @param {'auto'|'manual'} source
- * @param {string|null} category  - optional tag like 'preference', 'fact', 'name', etc.
- */
-function addMemoryNote(userId, text, source = "auto", category = null) {
-  const profiles = ensureLoaded();
-  const existing = profiles.users[userId] ?? {};
-  if (!Array.isArray(existing.memoryNotes)) existing.memoryNotes = [];
-
+async function addMemoryNote(userId, text, source = "auto", category = null) {
   const noteText = String(text ?? "")
     .trim()
     .slice(0, 500);
   if (!noteText) return null;
 
-  // Dedup: skip if an identical note already exists
-  if (existing.memoryNotes.some((n) => n.text === noteText)) return null;
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  if (!Array.isArray(d.memoryNotes)) d.memoryNotes = [];
+  if (d.memoryNotes.some((n) => n.text === noteText)) return null;
 
   const note = {
     id: `mem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
@@ -193,111 +157,70 @@ function addMemoryNote(userId, text, source = "auto", category = null) {
     timestamp: Date.now(),
   };
 
-  existing.memoryNotes.push(note);
+  d.memoryNotes.push(note);
 
-  // Keep most recent MAX_MEMORY_NOTES; drop oldest auto notes first if over limit
-  if (existing.memoryNotes.length > MAX_MEMORY_NOTES) {
-    const autoIdxs = existing.memoryNotes
-      .map((n, i) => ({ i, src: n.source }))
-      .filter((x) => x.src === "auto")
-      .map((x) => x.i);
-    if (autoIdxs.length) {
-      existing.memoryNotes.splice(autoIdxs[0], 1);
-    } else {
-      existing.memoryNotes.shift();
-    }
+  if (d.memoryNotes.length > MAX_MEMORY_NOTES) {
+    const autoIdx = d.memoryNotes.findIndex((n) => n.source === "auto");
+    if (autoIdx >= 0) d.memoryNotes.splice(autoIdx, 1);
+    else d.memoryNotes.shift();
   }
 
-  existing.updatedAt = Date.now();
-  profiles.users[userId] = existing;
-  save();
+  await _upsert(userId, d);
   return note;
 }
 
-/**
- * Delete a specific memory note by its id or by 1-based index.
- * Returns true if deleted, false if not found.
- */
-function deleteMemoryNote(userId, idOrIndex) {
-  const profiles = ensureLoaded();
-  const existing = profiles.users[userId];
-  if (!existing || !Array.isArray(existing.memoryNotes)) return false;
-
+async function deleteMemoryNote(userId, idOrIndex) {
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  if (!Array.isArray(d.memoryNotes)) return false;
   let idx = -1;
-  if (typeof idOrIndex === "number") {
-    // 1-based index
-    idx = idOrIndex - 1;
-  } else {
-    idx = existing.memoryNotes.findIndex((n) => n.id === idOrIndex);
-  }
-
-  if (idx < 0 || idx >= existing.memoryNotes.length) return false;
-  existing.memoryNotes.splice(idx, 1);
-  existing.updatedAt = Date.now();
-  save();
+  if (typeof idOrIndex === "number") idx = idOrIndex - 1;
+  else idx = d.memoryNotes.findIndex((n) => n.id === idOrIndex);
+  if (idx < 0 || idx >= d.memoryNotes.length) return false;
+  d.memoryNotes.splice(idx, 1);
+  await _upsert(userId, d);
   return true;
 }
 
-function clearMemoryNotes(userId) {
-  const profiles = ensureLoaded();
-  if (profiles.users[userId]) {
-    delete profiles.users[userId].memoryNotes;
-    profiles.users[userId].updatedAt = Date.now();
-    save();
-  }
+async function clearMemoryNotes(userId) {
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  d.memoryNotes = [];
+  await _upsert(userId, d);
 }
 
-// ─── Persona system ───────────────────────────────────────────────────────────
-/**
- * Persona shape:
- * {
- *   name: string,             // character/person name
- *   source: string|null,      // show/book/game/etc they're from, or 'real person'
- *   researchSummary: string,  // what was found via web search about them
- *   voiceNotes: string,       // how they speak, quirks, catchphrases, attitude
- *   setAt: number,            // timestamp
- *   setBy: string,            // userId who set it (same user, for record)
- * }
- */
+// ─── Persona ──────────────────────────────────────────────────────────────────
 
-function getPersona(userId) {
-  const profile = getUserProfile(userId);
-  return profile?.persona ?? null;
+async function getPersona(userId) {
+  const doc = await _getDoc(userId);
+  return _getData(doc).persona ?? null;
 }
 
-/**
- * Set a persona for the user's AI.
- */
-function setPersona(
+async function setPersona(
   userId,
   { name, source = null, researchSummary, voiceNotes },
 ) {
   if (!name || !researchSummary)
     throw new Error("Persona requires a name and researchSummary.");
-
-  const profiles = ensureLoaded();
-  const existing = profiles.users[userId] ?? {};
-  existing.persona = {
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  d.persona = {
     name: String(name).slice(0, 100),
     source: source ? String(source).slice(0, 100) : null,
     researchSummary: String(researchSummary).slice(0, 3000),
     voiceNotes: String(voiceNotes ?? "").slice(0, 1000),
     setAt: Date.now(),
-    setBy: userId,
   };
-  existing.updatedAt = Date.now();
-  profiles.users[userId] = existing;
-  save();
-  return existing.persona;
+  await _upsert(userId, d);
+  return d.persona;
 }
 
-function clearPersona(userId) {
-  const profiles = ensureLoaded();
-  const existing = profiles.users[userId];
-  if (!existing?.persona) return false;
-  delete existing.persona;
-  existing.updatedAt = Date.now();
-  save();
+async function clearPersona(userId) {
+  const doc = await _getDoc(userId);
+  const d = _getData(doc);
+  if (!d.persona) return false;
+  delete d.persona;
+  await _upsert(userId, d);
   return true;
 }
 
@@ -312,13 +235,11 @@ module.exports = {
   VALID_MODES,
   hasUnfilteredPlusConsent,
   setUnfilteredPlusConsent,
-  // Memory
   getMemoryNotes,
   addMemoryNote,
   deleteMemoryNote,
   clearMemoryNotes,
   MAX_MEMORY_NOTES,
-  // Persona
   getPersona,
   setPersona,
   clearPersona,

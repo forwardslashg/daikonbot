@@ -10,8 +10,50 @@ const {
   HarmCategory,
   HarmBlockThreshold,
 } = require("@google/generative-ai");
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("fs");
-const { join } = require("path");
+// ─── Appwrite-backed storage (write-through cache) ────────────────────────────
+let _appwrite = null;
+let _dbAvailable = false;
+try {
+  _appwrite = require("./db");
+  _dbAvailable = true;
+} catch {
+  console.warn(
+    "[AI] Appwrite not configured — data will not persist across restarts.",
+  );
+}
+
+async function _awWrite(collectionId, docId, data) {
+  if (!_dbAvailable) return;
+  const { db, DB_ID } = _appwrite;
+  try {
+    try {
+      await db.updateDocument(DB_ID, collectionId, docId, data);
+    } catch (e) {
+      if (e?.code === 404) {
+        await db.createDocument(DB_ID, collectionId, docId, data);
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[DB] Write failed (${collectionId}/${docId}):`,
+      err?.message ?? err,
+    );
+  }
+}
+
+async function _awRead(collectionId, key, keyField = "settingKey") {
+  if (!_dbAvailable) return null;
+  const { db, DB_ID, Query } = _appwrite;
+  try {
+    const result = await db.listDocuments(DB_ID, collectionId, [
+      Query.equal(keyField, key),
+      Query.limit(1),
+    ]);
+    return result.documents[0] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const OWNER_ID = "1470267547789033523";
@@ -64,9 +106,6 @@ const MAX_CHARS = 1980;
 const STREAM_MAX_LENGTH = 1500; // Above this, skip streaming and send in bulk to avoid Discord limit truncation
 
 // ─── Persistent AI settings ──────────────────────────────────────────────────
-const DATA_DIR = join(__dirname, "..", "data");
-const AI_SETTINGS_FILE = join(DATA_DIR, "ai-settings.json");
-const AI_MODERATION_FILE = join(DATA_DIR, "ai-moderation.json");
 
 const DEFAULT_SETTINGS = {
   default: {
@@ -128,82 +167,35 @@ function normalizeSelection(provider, model) {
 
 function ensureSettingsLoaded() {
   if (_aiSettingsCache) return _aiSettingsCache;
-
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  if (!existsSync(AI_SETTINGS_FILE)) {
-    _aiSettingsCache = clone(DEFAULT_SETTINGS);
-    writeFileSync(
-      AI_SETTINGS_FILE,
-      JSON.stringify(_aiSettingsCache, null, 2),
-      "utf8",
-    );
-    return _aiSettingsCache;
-  }
-
-  try {
-    const raw = readFileSync(AI_SETTINGS_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-
-    const defaultSelection =
-      normalizeSelection(parsed?.default?.provider, parsed?.default?.model) ??
-      clone(DEFAULT_SETTINGS.default);
-
-    const users = {};
-    const sourceUsers =
-      parsed?.users && typeof parsed.users === "object" ? parsed.users : {};
-    for (const [userId, selection] of Object.entries(sourceUsers)) {
-      const normalized = normalizeSelection(
-        selection?.provider,
-        selection?.model,
-      );
-      if (normalized) users[userId] = normalized;
-    }
-
-    const currentDay = getUtcDayKey();
-    const rawGlobalUsage =
-      parsed?.globalUsage && typeof parsed.globalUsage === "object"
-        ? parsed.globalUsage
-        : {};
-
-    let geminiDay =
-      typeof rawGlobalUsage.geminiDay === "string"
-        ? rawGlobalUsage.geminiDay
-        : currentDay;
-    let geminiCount =
-      Number.isInteger(rawGlobalUsage.geminiCount) &&
-      rawGlobalUsage.geminiCount >= 0
-        ? rawGlobalUsage.geminiCount
-        : 0;
-
-    if (geminiDay !== currentDay) {
-      geminiDay = currentDay;
-      geminiCount = 0;
-    }
-
-    _aiSettingsCache = {
-      default: defaultSelection,
-      users,
-      globalUsage: {
-        geminiDay,
-        geminiCount,
-      },
-    };
-  } catch {
-    _aiSettingsCache = clone(DEFAULT_SETTINGS);
-  }
-
+  _aiSettingsCache = clone(DEFAULT_SETTINGS);
   return _aiSettingsCache;
 }
 
 function saveSettings() {
+  if (!_dbAvailable) return;
+  const { COLLECTIONS } = _appwrite;
   const settings = ensureSettingsLoaded();
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
+  // Persist default selection
+  _awWrite(COLLECTIONS.AI_SETTINGS, "global_default", {
+    settingKey: "global_default",
+    provider: settings.default.provider,
+    model: settings.default.model,
+  });
+  // Persist global usage
+  _awWrite(COLLECTIONS.AI_SETTINGS, "global_usage", {
+    settingKey: "global_usage",
+    provider: "",
+    model: "",
+    extra: JSON.stringify(settings.globalUsage),
+  });
+  // Persist per-user selections
+  for (const [uid, sel] of Object.entries(settings.users ?? {})) {
+    _awWrite(COLLECTIONS.AI_SETTINGS, `user_${uid}`, {
+      settingKey: `user_${uid}`,
+      provider: sel.provider,
+      model: sel.model,
+    });
   }
-  writeFileSync(AI_SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf8");
 }
 
 function getUtcDayKey() {
@@ -289,79 +281,39 @@ function consumeGlobalProviderLimit(provider, model = null) {
 }
 
 function ensureModerationLoaded() {
-  if (_moderationLoaded) return;
-
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  _banStore.clear();
-  _userLimitStore.clear();
-
-  if (!existsSync(AI_MODERATION_FILE)) {
-    _moderationLoaded = true;
-    saveModeration();
-    return;
-  }
-
-  try {
-    const raw = readFileSync(AI_MODERATION_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-
-    const bans =
-      parsed?.bans && typeof parsed.bans === "object" ? parsed.bans : {};
-    for (const [userId, ban] of Object.entries(bans)) {
-      if (!ban || typeof ban !== "object") continue;
-      const reason =
-        typeof ban.reason === "string" && ban.reason.trim()
-          ? ban.reason.trim()
-          : "No reason given.";
-      const bannedAt = Number.isFinite(ban.bannedAt)
-        ? ban.bannedAt
-        : Date.now();
-      const bannedBy = typeof ban.bannedBy === "string" ? ban.bannedBy : null;
-      _banStore.set(userId, { reason, bannedAt, bannedBy });
-    }
-
-    const customLimits =
-      parsed?.customLimits && typeof parsed.customLimits === "object"
-        ? parsed.customLimits
-        : {};
-    for (const [userId, limit] of Object.entries(customLimits)) {
-      const normalized = Number.isInteger(limit) && limit >= 0 ? limit : null;
-      if (normalized !== null) _userLimitStore.set(userId, normalized);
-    }
-  } catch {
-    // Fall back to empty moderation state on malformed files.
-  }
-
   _moderationLoaded = true;
+  // Moderation is pre-loaded by initAIStorage() at startup.
+  // Nothing to do here — _banStore and _userLimitStore are already populated.
 }
 
 function saveModeration() {
   if (!_moderationLoaded) {
     _moderationLoaded = true;
   }
-
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
+  if (!_dbAvailable) return;
+  const { COLLECTIONS } = _appwrite;
+  // Write bans
+  for (const [userId, ban] of _banStore.entries()) {
+    _awWrite(COLLECTIONS.AI_MOD, `ban_${userId}`, {
+      userId,
+      type: "ban",
+      reason: ban.reason,
+      bannedBy: ban.bannedBy ?? "",
+      createdAt: ban.bannedAt,
+      value: "",
+    });
   }
-
-  const bans = {};
-  for (const [userId, value] of _banStore.entries()) {
-    bans[userId] = value;
+  // Write custom limits
+  for (const [userId, limit] of _userLimitStore.entries()) {
+    _awWrite(COLLECTIONS.AI_MOD, `limit_${userId}`, {
+      userId,
+      type: "limit",
+      value: String(limit),
+      createdAt: Date.now(),
+      reason: "",
+      bannedBy: "",
+    });
   }
-
-  const customLimits = {};
-  for (const [userId, value] of _userLimitStore.entries()) {
-    customLimits[userId] = value;
-  }
-
-  writeFileSync(
-    AI_MODERATION_FILE,
-    JSON.stringify({ bans, customLimits }, null, 2),
-    "utf8",
-  );
 }
 
 function getDefaultAISelection() {
@@ -1238,14 +1190,14 @@ async function callAIWithTools(
 }
 
 // ─── System instruction builder ───────────────────────────────────────────────
-function buildSystemInstruction(userId, mode = "chat", provider = null) {
+async function buildSystemInstruction(userId, mode = "chat", provider = null) {
   // Lazy-load profile helpers to avoid circular deps
   let getMemoryNotes, getPersona;
   try {
     ({ getMemoryNotes, getPersona } = require("./aiProfiles"));
   } catch {
-    getMemoryNotes = () => [];
-    getPersona = () => null;
+    getMemoryNotes = async () => [];
+    getPersona = async () => null;
   }
 
   const now = new Date();
@@ -1254,7 +1206,7 @@ function buildSystemInstruction(userId, mode = "chat", provider = null) {
   const activeProvider = provider ?? getEffectiveAISelection(userId).provider;
 
   // ── Persona injection ──────────────────────────────────────────────────────
-  const persona = getPersona(userId);
+  const persona = await getPersona(userId).catch(() => null);
 
   // If a persona is active, it takes full control of the personality section
   if (persona) {
@@ -1268,7 +1220,7 @@ function buildSystemInstruction(userId, mode = "chat", provider = null) {
       : `Non-owner users share ${HOURLY_MAX} AI credits/hour across all AI commands.`;
 
     // Build memory block for persona context
-    const memoryNotes = getMemoryNotes(userId);
+    const memoryNotes = await getMemoryNotes(userId).catch(() => []);
     const memoryBlock = memoryNotes.length
       ? `\n\nWHAT YOU KNOW ABOUT THIS USER\n${memoryNotes.map((n) => `- ${n.text}`).join("\n")}`
       : "";
@@ -1302,7 +1254,7 @@ ${rateLimitNote}`;
     : `Non-owner users share ${HOURLY_MAX} AI credits/hour (cost depends on model) across all AI commands, with a ${COOLDOWN_MS / 1000}s cooldown between requests. Gemini models also share a global ${GLOBAL_GEMINI_DAILY_MAX}/day cap.`;
 
   // ── Memory notes injection ─────────────────────────────────────────────────
-  const memoryNotes = getMemoryNotes(userId);
+  const memoryNotes = await getMemoryNotes(userId).catch(() => []);
   const manualNotes = memoryNotes.filter((n) => n.source === "manual");
   const autoNotes = memoryNotes.filter((n) => n.source === "auto");
 
@@ -1830,6 +1782,74 @@ async function callAIWithToolsFallback(
   throw aggError;
 }
 
+// ─── Appwrite startup loader ─────────────────────────────────────────────────
+async function initAIStorage() {
+  if (!_dbAvailable) return;
+  const { db, DB_ID, COLLECTIONS, Query } = _appwrite;
+  console.log("[AI] Loading settings and moderation from Appwrite...");
+
+  try {
+    // Load global default
+    const defDoc = await _awRead(COLLECTIONS.AI_SETTINGS, "global_default");
+    if (defDoc) {
+      const norm = normalizeSelection(defDoc.provider, defDoc.model);
+      if (norm) {
+        if (!_aiSettingsCache) _aiSettingsCache = clone(DEFAULT_SETTINGS);
+        _aiSettingsCache.default = norm;
+      }
+    }
+
+    // Load global usage
+    const usageDoc = await _awRead(COLLECTIONS.AI_SETTINGS, "global_usage");
+    if (usageDoc) {
+      try {
+        const extra = JSON.parse(usageDoc.extra ?? "{}");
+        if (!_aiSettingsCache) _aiSettingsCache = clone(DEFAULT_SETTINGS);
+        _aiSettingsCache.globalUsage = {
+          geminiDay: extra.geminiDay ?? getUtcDayKey(),
+          geminiCount: extra.geminiCount ?? 0,
+        };
+      } catch {}
+    }
+
+    // Load per-user selections (paginate up to 500)
+    const userDocs = await db.listDocuments(DB_ID, COLLECTIONS.AI_SETTINGS, [
+      Query.startsWith("settingKey", "user_"),
+      Query.limit(500),
+    ]);
+    if (!_aiSettingsCache) _aiSettingsCache = clone(DEFAULT_SETTINGS);
+    for (const doc of userDocs.documents) {
+      const uid = doc.settingKey.slice(5);
+      const norm = normalizeSelection(doc.provider, doc.model);
+      if (norm) _aiSettingsCache.users[uid] = norm;
+    }
+
+    // Load moderation
+    const modDocs = await db.listDocuments(DB_ID, COLLECTIONS.AI_MOD, [
+      Query.limit(500),
+    ]);
+    for (const doc of modDocs.documents) {
+      if (doc.type === "ban") {
+        _banStore.set(doc.userId, {
+          reason: doc.reason ?? "No reason given.",
+          bannedAt: doc.createdAt ?? Date.now(),
+          bannedBy: doc.bannedBy ?? null,
+        });
+      } else if (doc.type === "limit") {
+        const limit = parseInt(doc.value ?? "", 10);
+        if (Number.isInteger(limit) && limit >= 0) {
+          _userLimitStore.set(doc.userId, limit);
+        }
+      }
+    }
+
+    _moderationLoaded = true;
+    console.log("[AI] Storage loaded from Appwrite.");
+  } catch (err) {
+    console.error("[AI] Failed to load from Appwrite:", err?.message ?? err);
+  }
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   // Constants
@@ -1906,4 +1926,5 @@ module.exports = {
   streamResponse,
   parseParagraphs,
   formatToolCallDisplay,
+  initAIStorage,
 };

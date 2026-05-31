@@ -2,7 +2,7 @@ const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const { readdirSync } = require("fs");
 const { join } = require("path");
 require("dotenv").config();
-const { isOwner } = require("./utils/aiEngine");
+const { isOwner, initAIStorage } = require("./utils/aiEngine");
 const { startReminderScheduler } = require("./utils/reminders");
 
 if (!process.env.DISCORD_TOKEN) {
@@ -15,7 +15,7 @@ if (!process.env.DISCORD_TOKEN) {
 // ─── Global command rate limiter (non-owners: 3 commands per 10 seconds) ─────
 const RATE_LIMIT_MAX = 3;
 const RATE_LIMIT_WINDOW_MS = 10_000;
-const _globalCmdBuckets = new Map(); // userId -> { count, resetAt }
+const _globalCmdBuckets = new Map();
 
 function checkGlobalRateLimit(userId) {
   if (isOwner(userId)) return { allowed: true };
@@ -32,8 +32,10 @@ function checkGlobalRateLimit(userId) {
   }
 
   if (bucket.count >= RATE_LIMIT_MAX) {
-    const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
-    return { allowed: false, retryAfter };
+    return {
+      allowed: false,
+      retryAfter: Math.ceil((bucket.resetAt - now) / 1000),
+    };
   }
 
   bucket.count += 1;
@@ -44,7 +46,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // privileged — enable in Discord dev portal
+    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -63,14 +65,12 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
-
-process.on("unhandledRejection", (reason) => {
-  console.error("[UNHANDLED_REJECTION]", reason);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("[UNCAUGHT_EXCEPTION]", err);
-});
+process.on("unhandledRejection", (reason) =>
+  console.error("[UNHANDLED_REJECTION]", reason),
+);
+process.on("uncaughtException", (err) =>
+  console.error("[UNCAUGHT_EXCEPTION]", err),
+);
 
 // ─── Load commands ────────────────────────────────────────────────────────────
 client.commands = new Collection();
@@ -81,12 +81,10 @@ const commandFiles = readdirSync(join(__dirname, "commands")).filter((f) =>
 
 for (const file of commandFiles) {
   const command = require(join(__dirname, "commands", file));
-
   if (!command.data || !command.execute) {
     console.warn(`[WARN] ${file} is missing 'data' or 'execute' — skipping.`);
     continue;
   }
-
   client.commands.set(command.data.name, command);
   console.log(`[CMD] Loaded /${command.data.name}`);
 }
@@ -96,15 +94,6 @@ client.once("clientReady", () => {
   console.log(`Ready! Logged in as ${client.user.tag}`);
   startReminderScheduler(client);
 });
-
-// Lazy-load AI interaction handlers (buttons + modals) from the ai command
-function getAICommand() {
-  return client.commands.get("ai");
-}
-
-function getAIModelCommand() {
-  return client.commands.get("aimodel");
-}
 
 async function safeReplyError(interaction, label) {
   console.error(`[ERROR] ${label}:`, ...arguments);
@@ -145,8 +134,11 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ── User context menu commands (right-click on a user) ─────────────────────
-  if (interaction.isUserContextMenuCommand()) {
+  // ── Context menu commands (right-click on user/message) ────────────────────
+  if (
+    interaction.isUserContextMenuCommand() ||
+    interaction.isMessageContextMenuCommand()
+  ) {
     const command = client.commands.get(interaction.commandName);
     if (!command) {
       console.warn(`[WARN] Unknown context menu: ${interaction.commandName}`);
@@ -168,105 +160,11 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ── Message context menu commands (right-click on a message) ───────────────
-  if (interaction.isMessageContextMenuCommand()) {
-    const command = client.commands.get(interaction.commandName);
-    if (!command) {
-      console.warn(
-        `[WARN] Unknown message context menu: ${interaction.commandName}`,
-      );
-      return;
-    }
-    const rateCheck = checkGlobalRateLimit(interaction.user.id);
-    if (!rateCheck.allowed) {
-      await interaction.reply({
-        content: `You're using commands too fast. Please wait **${rateCheck.retryAfter}s** before trying again.`,
-        ephemeral: true,
-      });
-      return;
-    }
-    try {
-      await command.execute(interaction);
-    } catch (err) {
-      await safeReplyError(
-        interaction,
-        `ctxmsg:${interaction.commandName}`,
-        err,
-      );
-    }
-    return;
-  }
-
-  // ── Button interactions ─────────────────────────────────────────────────────
-  if (interaction.isButton()) {
-    if (interaction.customId.startsWith("aimodel_")) {
-      const modelCmd = getAIModelCommand();
-      if (modelCmd?.handleButton) {
-        try {
-          const handled = await modelCmd.handleButton(interaction);
-          if (handled) return;
-        } catch (err) {
-          await safeReplyError(interaction, `btn:${interaction.customId}`, err);
-          return;
-        }
-      }
-    }
-
-    // AI conversation buttons
-    if (interaction.customId.startsWith("ai_")) {
-      const aiCmd = getAICommand();
-      if (aiCmd?.handleButton) {
-        try {
-          await aiCmd.handleButton(interaction);
-        } catch (err) {
-          await safeReplyError(interaction, `btn:${interaction.customId}`, err);
-        }
-      }
-    }
-    return;
-  }
-
-  // ── String select menu interactions ────────────────────────────────────────
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId.startsWith("aimodel_")) {
-      const modelCmd = getAIModelCommand();
-      if (modelCmd?.handleSelectMenu) {
-        try {
-          const handled = await modelCmd.handleSelectMenu(interaction);
-          if (handled) return;
-        } catch (err) {
-          await safeReplyError(
-            interaction,
-            `select:${interaction.customId}`,
-            err,
-          );
-          return;
-        }
-      }
-    }
-
-    return;
-  }
-
-  // ── Modal submissions ───────────────────────────────────────────────────────
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId.startsWith("ai_modal_")) {
-      const aiCmd = getAICommand();
-      if (aiCmd?.handleModal) {
-        try {
-          await aiCmd.handleModal(interaction);
-        } catch (err) {
-          await safeReplyError(
-            interaction,
-            `modal:${interaction.customId}`,
-            err,
-          );
-        }
-      }
-    }
-    return;
-  }
+  // ── Everything else (buttons, selects, modals) — no longer used ────────────
 });
 
-// ─── Login ────────────────────────────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN);
+// ─── Startup ──────────────────────────────────────────────────────────────────
+(async () => {
+  await initAIStorage();
+  client.login(process.env.DISCORD_TOKEN);
+})();
