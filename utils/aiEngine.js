@@ -816,6 +816,37 @@ function sanitizeAIOutput(text) {
   return String(text ?? "").trim();
 }
 
+function normalizeGeminiHistory(history = []) {
+  if (!Array.isArray(history)) return [];
+
+  const normalized = history
+    .filter((entry) => {
+      const role = entry?.role;
+      return (
+        (role === "user" || role === "model") &&
+        Array.isArray(entry.parts) &&
+        historyText(entry)
+      );
+    })
+    .map((entry) => ({
+      role: entry.role,
+      parts: [{ text: historyText(entry) }],
+    }));
+
+  while (normalized.length && normalized[0].role !== "user") {
+    normalized.shift();
+  }
+
+  while (
+    normalized.length &&
+    normalized[normalized.length - 1].role !== "model"
+  ) {
+    normalized.pop();
+  }
+
+  return normalized;
+}
+
 async function callGemini(
   modelName,
   systemInstruction,
@@ -850,7 +881,7 @@ async function callGemini(
 
   const model = genAI.getGenerativeModel(generationConfig);
 
-  const chat = model.startChat({ history });
+  const chat = model.startChat({ history: normalizeGeminiHistory(history) });
 
   let result;
   try {
@@ -1104,6 +1135,7 @@ async function callAIWithTools(
 
   let currentPrompt = userMessage;
   let toolCalls = 0;
+  const seenToolCalls = new Set();
 
   const protocol = buildToolProtocol(tools);
   const mergedSystemInstruction = protocol
@@ -1119,7 +1151,17 @@ async function callAIWithTools(
     );
     const envelope = extractToolEnvelope(output);
 
-    if (!envelope || !envelope.tool || toolCalls >= maxToolCalls) {
+    if (envelope?.tool && toolCalls >= maxToolCalls) {
+      console.error(
+        `[AI_TOOLS] Tool call limit reached. tool=${envelope.tool} toolCalls=${toolCalls} max=${maxToolCalls}`,
+      );
+      return {
+        text: "I used the available tool calls for this request, but the model tried to keep calling tools instead of answering. Please try again with a narrower request.",
+        toolCalls,
+      };
+    }
+
+    if (!envelope || !envelope.tool) {
       if (!output || !output.trim()) {
         console.error(
           `[AI_TOOLS] Empty response from AI. envelope=${JSON.stringify(envelope)} toolCalls=${toolCalls} max=${maxToolCalls}`,
@@ -1135,6 +1177,20 @@ async function callAIWithTools(
       }
       return { text: output, toolCalls };
     }
+
+    const toolCallKey = `${envelope.tool}:${JSON.stringify(
+      envelope.arguments ?? {},
+    )}`;
+    if (seenToolCalls.has(toolCallKey)) {
+      console.error(
+        `[AI_TOOLS] Repeated tool call blocked: ${envelope.tool} args=${JSON.stringify(envelope.arguments ?? {}).slice(0, 200)}`,
+      );
+      return {
+        text: "I already ran that exact tool call for this request, so I stopped it before it looped. Please try again with a more specific prompt if you need different information.",
+        toolCalls,
+      };
+    }
+    seenToolCalls.add(toolCallKey);
 
     console.error(
       `[AI_TOOLS] Detected tool call: ${envelope.tool} args=${JSON.stringify(envelope.arguments ?? {}).slice(0, 200)}`,
@@ -1171,21 +1227,11 @@ async function callAIWithTools(
       );
     }
 
-    workingHistory.push({
-      role: "model",
-      parts: [{ text: `[Tool call: ${envelope.tool}]` }],
-    });
-    workingHistory.push({
-      role: "user",
-      parts: [
-        {
-          text: `TOOL_RESULT ${envelope.tool}:\n${JSON.stringify(toolResult)}`,
-        },
-      ],
-    });
+    workingHistory.push({ role: "user", parts: [{ text: currentPrompt }] });
+    workingHistory.push({ role: "model", parts: [{ text: output }] });
 
     currentPrompt =
-      "Use the TOOL_RESULT above to answer the user directly. If more tool data is required, call another tool.";
+      `TOOL_RESULT ${envelope.tool}:\n${JSON.stringify(toolResult)}\n\nUse the TOOL_RESULT above to answer the user directly. If more tool data is required, call another tool.`;
   }
 }
 
