@@ -5,6 +5,26 @@
     },
     "u_persona": {
       "updatedAt": 1780257606054
+    },
+    "t1": {
+      "memoryNotes": [
+        {
+          "id": "mem_mpu7z7us_ai2",
+          "text": "Your name is Slash",
+          "source": "manual",
+          "category": "name",
+          "timestamp": 1780258554245
+        }
+      ],
+      "updatedAt": 1780258554245,
+      "persona": {
+        "name": "Guts",
+        "source": "Berserk",
+        "researchSummary": "Dark warrior.",
+        "voiceNotes": "Gruff and determined.",
+        "setAt": 1780258554245,
+        "setBy": "t1"
+      }
     }
   }
 }

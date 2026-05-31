@@ -75,15 +75,12 @@ const {
 const BTN_FOLLOWUP = (uid) => `ai_followup:${uid}`;
 const BTN_NEWTOPIC = (uid) => `ai_newtopic:${uid}`;
 const BTN_SUMMARY = (uid) => `ai_summary:${uid}`;
-const BTN_ANILIST_PROFILE = (uid) => `ai_anilist_profile:${uid}`;
-const BTN_ANILIST_RECS = (uid) => `ai_anilist_recs:${uid}`;
 const BTN_SWITCHMODEL = (uid) => `ai_switchmodel:${uid}`;
 const BTN_UNFILTERED_CONSENT = (uid) => `ai_unfiltered_consent:${uid}`;
 const BTN_UNFILTERED_DECLINE = (uid) => `ai_unfiltered_decline:${uid}`;
 const BTN_RETRY = (uid) => `ai_retry:${uid}`;
 
 const MODAL_FOLLOWUP_ID = (uid) => `ai_modal_followup:${uid}`;
-const MODAL_ANILIST_ID = (uid, mode) => `ai_modal_anilist:${uid}:${mode}`;
 
 // Stores last user prompt for retry button
 const lastPrompts = new Map();
@@ -342,103 +339,64 @@ function getNextModelSelection(userId) {
   return { previous: current, next };
 }
 
-function makeButtonsWithContext(
-  userId,
-  turnCount,
-  {
-    includeAniList = false,
-    needsAniListAccess = false,
-    hasLinkedAniList = false,
-  } = {},
-) {
+function makeButtonsWithContext(userId, turnCount) {
   const row = new ActionRowBuilder();
-
-  if (includeAniList) {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(BTN_ANILIST_PROFILE(userId))
-        .setLabel(
-          needsAniListAccess || !hasLinkedAniList
-            ? "Link AniList"
-            : "My AniList",
-        )
-        .setEmoji("📊")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(BTN_ANILIST_RECS(userId))
-        .setLabel("Anime recs")
-        .setEmoji("🎯")
-        .setStyle(ButtonStyle.Success),
-    );
-  }
-
   row.addComponents(
+    new ButtonBuilder()
+      .setCustomId(BTN_FOLLOWUP(userId))
+      .setLabel("Follow up")
+      .setEmoji("💬")
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(BTN_SUMMARY(userId))
       .setLabel("Summarize")
-      .setEmoji("🧠")
+      .setEmoji("📋")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(BTN_NEWTOPIC(userId))
-      .setLabel(turnCount > 0 ? "New topic" : "End chat")
+      .setLabel("New topic")
       .setEmoji("🗑️")
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(BTN_SWITCHMODEL(userId))
+      .setLabel("Model")
+      .setEmoji("🔁")
+      .setStyle(ButtonStyle.Secondary),
   );
-
   return row;
 }
 
-function makeButtonsV2(
-  userId,
-  turnCount,
-  {
-    includeAniList = false,
-    needsAniListAccess = false,
-    hasLinkedAniList = false,
-  } = {},
-) {
-  const buttons = [];
-
-  if (includeAniList) {
-    buttons.push(
-      {
-        type: 2,
-        custom_id: BTN_ANILIST_PROFILE(userId),
-        label:
-          needsAniListAccess || !hasLinkedAniList
-            ? "Link AniList"
-            : "My AniList",
-        emoji: { name: "📊" },
-        style: ButtonStyle.Success,
-      },
-      {
-        type: 2,
-        custom_id: BTN_ANILIST_RECS(userId),
-        label: "Anime recs",
-        emoji: { name: "🎯" },
-        style: ButtonStyle.Success,
-      },
-    );
-  }
-
-  buttons.push(
+function makeButtonsV2(userId) {
+  return [
+    {
+      type: 2,
+      custom_id: BTN_FOLLOWUP(userId),
+      label: "Follow up",
+      emoji: { name: "💬" },
+      style: ButtonStyle.Primary,
+    },
     {
       type: 2,
       custom_id: BTN_SUMMARY(userId),
       label: "Summarize",
-      emoji: { name: "🧠" },
+      emoji: { name: "📋" },
       style: ButtonStyle.Secondary,
     },
     {
       type: 2,
       custom_id: BTN_NEWTOPIC(userId),
-      label: turnCount > 0 ? "New topic" : "End chat",
+      label: "New topic",
       emoji: { name: "🗑️" },
       style: ButtonStyle.Secondary,
     },
-  );
-
-  return buttons;
+    {
+      type: 2,
+      custom_id: BTN_SWITCHMODEL(userId),
+      label: "Model",
+      emoji: { name: "🔁" },
+      style: ButtonStyle.Secondary,
+    },
+  ];
 }
 
 function describeSelection(selection) {
@@ -474,51 +432,10 @@ async function deferAndNotifyThinking(interaction, userId) {
   }
 }
 
-function buildComponentsV2Payload(
-  text,
-  userId,
-  turns,
-  footer,
-  buttonContext = {},
-  metadata = null,
-) {
+function buildComponentsV2Payload(text, userId, footer) {
   const containerComponents = [{ type: 10, content: text }];
 
-  if (metadata) {
-    const detailParts = [];
-    const selection = getEffectiveAISelection(userId);
-    const modelCost = getModelCreditCost(selection.provider, selection.model);
-    detailParts.push(
-      `🤖 \`${selection.provider}:${selection.model}\` (${modelCost}c)`,
-    );
-
-    if (metadata.latencyMs) {
-      detailParts.push(`⏱️ ${(metadata.latencyMs / 1000).toFixed(2)}s`);
-    }
-
-    if (metadata.searchQueries && metadata.searchQueries.length > 0) {
-      const uniqueQueries = [...new Set(metadata.searchQueries)];
-      detailParts.push(
-        `🔍 Searched: ${uniqueQueries.map((q) => `"${q}"`).join(", ")}`,
-      );
-    }
-
-    if (metadata.fallbackUsed) {
-      detailParts.push(`⚠️ Fallback: ${metadata.fallbackUsed}`);
-    }
-
-    if (metadata.toolsUsed && metadata.toolsUsed.length > 0) {
-      const toolNames = metadata.toolsUsed.map((t) => t.name);
-      const uniqueTools = [...new Set(toolNames)];
-      detailParts.push(`🛠️ Tools: ${uniqueTools.join(", ")}`);
-    }
-
-    const detailText = `-# ${detailParts.join("  ·  ")}`;
-    containerComponents.push(
-      { type: 14, spacing: 1 },
-      { type: 10, content: detailText },
-    );
-  } else if (footer) {
+  if (footer) {
     containerComponents.push(
       { type: 14, spacing: 1 },
       { type: 10, content: footer },
@@ -527,7 +444,7 @@ function buildComponentsV2Payload(
 
   containerComponents.push({
     type: 1,
-    components: makeButtonsV2(userId, turns, buttonContext),
+    components: makeButtonsV2(userId),
   });
 
   return {
@@ -535,7 +452,7 @@ function buildComponentsV2Payload(
     components: [
       {
         type: 17,
-        accent_color: 0x00a884,
+        accent_color: 0x5865f2,
         components: containerComponents,
       },
     ],
@@ -595,7 +512,6 @@ async function buildContextBlock(interaction, prompt) {
 function makeFooter(userId, turns) {
   const selection = getEffectiveAISelection(userId);
   const modelCost = getModelCreditCost(selection.provider, selection.model);
-  const modelInfo = ` · ${selection.provider}:${selection.model} (${modelCost}c)`;
 
   // Persona indicator
   const persona = getPersona(userId);
@@ -605,56 +521,28 @@ function makeFooter(userId, turns) {
   const memNotes = getMemoryNotes(userId);
   const memNote = memNotes.length ? ` · 🧠 ${memNotes.length}` : "";
 
+  // Model label — strip the provider prefix for cleanliness
+  const modelLabel = selection.model;
+  const costLabel = `${modelCost}cr`;
+  const turnLabel = turns > 0 ? ` · turn ${turns + 1}` : "";
+
   if (isOwner(userId)) {
-    return turns > 0
-      ? `-# Turn ${turns + 1} · no rate limits${modelInfo}${personaNote}${memNote}`
-      : `-# no rate limits${modelInfo}${personaNote}${memNote}`;
+    return `-# ${modelLabel} · ${costLabel}${turnLabel}${personaNote}${memNote}`;
   }
+
   const rem = remainingCredits(userId);
-  const turnNote = turns > 0 ? ` · turn ${turns + 1}` : "";
   const geminiUsage = getGlobalGeminiUsage();
-  const geminiNote =
+  const globalNote =
     selection.provider === AI_PROVIDERS.GEMINI && !isGemmaModel(selection.model)
-      ? ` · Gemini global ${geminiUsage.used}/${geminiUsage.limit} today`
+      ? ` · ${geminiUsage.used}/${geminiUsage.limit} global`
       : "";
-  return `-# ${rem} AI credit(s) remaining this hour${turnNote}${modelInfo}${personaNote}${memNote}${geminiNote}`;
+
+  return `-# ${rem}cr left · ${modelLabel} · ${costLabel}${turnLabel}${personaNote}${memNote}${globalNote}`;
 }
 
 function buildPlainMetadataFooter(userId, footer, metadata) {
-  if (!metadata) return footer;
-
-  const lines = [];
-  const detailParts = [];
-  const selection = getEffectiveAISelection(userId);
-  const modelCost = getModelCreditCost(selection.provider, selection.model);
-
-  detailParts.push(
-    `🤖 \`${selection.provider}:${selection.model}\` (${modelCost}c)`,
-  );
-
-  if (metadata.latencyMs) {
-    detailParts.push(`⏱️ ${(metadata.latencyMs / 1000).toFixed(2)}s`);
-  }
-
-  if (metadata.searchQueries && metadata.searchQueries.length > 0) {
-    const uniqueQueries = [...new Set(metadata.searchQueries)];
-    detailParts.push(
-      `🔍 Searched: ${uniqueQueries.map((q) => `"${q}"`).join(", ")}`,
-    );
-  }
-
-  if (metadata.fallbackUsed) {
-    detailParts.push(`⚠️ Fallback: ${metadata.fallbackUsed}`);
-  }
-
-  if (metadata.toolsUsed && metadata.toolsUsed.length > 0) {
-    const toolNames = metadata.toolsUsed.map((t) => t.name);
-    const uniqueTools = [...new Set(toolNames)];
-    detailParts.push(`🛠️ Tools: ${uniqueTools.join(", ")}`);
-  }
-
-  lines.push(`-# ${detailParts.join("  ·  ")}`);
-  return lines.join("\n");
+  // Always use the clean footer; metadata details are shown in streamResponse
+  return footer ?? null;
 }
 
 function resolveAniListUsername(userId, args) {
@@ -675,21 +563,10 @@ async function executeAITool(name, args, userId, interaction) {
     `[TOOL] Called: ${name} args=${JSON.stringify(args ?? {}).slice(0, 300)}`,
   );
 
-  const toolState =
-    args && typeof args.__toolState === "object" ? args.__toolState : null;
-
-  if (toolState) {
-    toolState.usedAniListTool = true;
-  }
-
-  // Show tool call in the message if streaming
+  // Show tool call in the message while working
   const toolDisplay = formatToolCallDisplay(name, args);
   if (interaction && (interaction.deferred || interaction.replied)) {
-    interaction
-      .editReply({
-        content: `\n${toolDisplay}...`,
-      })
-      .catch(() => {});
+    interaction.editReply({ content: `-# ${toolDisplay}` }).catch(() => {});
   }
 
   if (name === "anilist_user_overview") {
@@ -697,7 +574,6 @@ async function executeAITool(name, args, userId, interaction) {
     try {
       username = resolveAniListUsername(userId, args);
     } catch (err) {
-      if (toolState) toolState.needsAniListAccess = true;
       throw err;
     }
 
@@ -711,7 +587,6 @@ async function executeAITool(name, args, userId, interaction) {
     try {
       username = resolveAniListUsername(userId, args);
     } catch (err) {
-      if (toolState) toolState.needsAniListAccess = true;
       throw err;
     }
 
@@ -743,7 +618,6 @@ async function executeAITool(name, args, userId, interaction) {
     try {
       username = resolveAniListUsername(userId, args);
     } catch (err) {
-      if (toolState) toolState.needsAniListAccess = true;
       throw err;
     }
 
@@ -1441,16 +1315,6 @@ ${searchContext}`,
 // ─── Core AI reply ────────────────────────────────────────────────────────────
 async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
   const userId = interaction.user.id;
-  const linkedAniList = getAniListUsername(userId);
-  const promptLower = String(promptText ?? "").toLowerCase();
-  const askedAniList =
-    /\banilist\b|\bmy anime\b|\banime list\b|\bwatchlist\b|\brecommend\b|\bgenre\b|\bupcoming\b|\bairing\b|\bcompleted\b/.test(
-      promptLower,
-    );
-  const toolState = {
-    usedAniListTool: false,
-    needsAniListAccess: false,
-  };
 
   if (!isOwner(userId)) {
     const selection = getEffectiveAISelection(userId);
@@ -1525,13 +1389,7 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
             metadataCollector,
           },
           AI_TOOLS,
-          (name, args) =>
-            executeAITool(
-              name,
-              { ...(args ?? {}), __toolState: toolState },
-              userId,
-              interaction,
-            ),
+          (name, args) => executeAITool(name, args ?? {}, userId, interaction),
         ),
       2,
       800,
@@ -1587,30 +1445,12 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
       finalText += `\n\n-# ⚠️ Primary model failed, fell back to \`${metadataCollector.fallbackUsed}\``;
     }
 
-    const isErrorMessage = text.startsWith("*[") && text.includes("]*");
-    const includeAniList =
-      !isErrorMessage &&
-      (askedAniList ||
-        toolState.usedAniListTool ||
-        toolState.needsAniListAccess);
-    const needsAniListAccess =
-      includeAniList && (!linkedAniList || toolState.needsAniListAccess);
-
-    if (needsAniListAccess) {
-      finalText = `-# Need access to your AniList data? Tap **Link AniList** below and I can pull your profile/watchlist details.\n\n${finalText}`;
-    }
-
     // Store the response in session
     appendSession(userId, promptText, finalText);
     const turns = sessionTurnCount(userId);
     const chunks = splitMessage(finalText);
     const footer = makeFooter(userId, turns - 1);
-    const buttonContext = {
-      includeAniList,
-      needsAniListAccess,
-      hasLinkedAniList: Boolean(linkedAniList),
-    };
-    const buttons = makeButtonsWithContext(userId, turns, buttonContext);
+    const buttons = makeButtonsWithContext(userId, turns);
 
     const send =
       interaction.deferred || interaction.replied
@@ -1630,7 +1470,6 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
         _thinkingStartTimes.delete(userId);
         await streamResponse(interaction, chunks[0], {
           isThinking,
-          metadataCollector,
           footer,
           buttons,
           thinkingStartMs,
@@ -1789,72 +1628,6 @@ async function handleButton(interaction) {
     return;
   }
 
-  if (action === "ai_anilist_profile") {
-    const savedUsername = getAniListUsername(targetUserId);
-
-    if (!savedUsername) {
-      const modal = new ModalBuilder()
-        .setCustomId(MODAL_ANILIST_ID(targetUserId, "profile"))
-        .setTitle("Link AniList Username");
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId("anilist_username")
-            .setLabel("AniList username")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("e.g. DaikonFan")
-            .setMaxLength(20)
-            .setRequired(true),
-        ),
-      );
-
-      await interaction.showModal(modal);
-      return;
-    }
-
-    await deferAndNotifyThinking(interaction, targetUserId);
-    await runAIChat(
-      interaction,
-      `Use AniList tools to show my profile overview for username ${savedUsername}. Include watching stats and 3 personalized suggestions.`,
-      { isFollowUp: true },
-    );
-    return;
-  }
-
-  if (action === "ai_anilist_recs") {
-    const savedUsername = getAniListUsername(targetUserId);
-
-    if (!savedUsername) {
-      const modal = new ModalBuilder()
-        .setCustomId(MODAL_ANILIST_ID(targetUserId, "recs"))
-        .setTitle("Link AniList Username");
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId("anilist_username")
-            .setLabel("AniList username")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("e.g. DaikonFan")
-            .setMaxLength(20)
-            .setRequired(true),
-        ),
-      );
-
-      await interaction.showModal(modal);
-      return;
-    }
-
-    await deferAndNotifyThinking(interaction, targetUserId);
-    await runAIChat(
-      interaction,
-      `Use AniList tools to inspect ${savedUsername}'s current anime and suggest 8 anime recommendations with short reasons.`,
-      { isFollowUp: true },
-    );
-    return;
-  }
-
   if (action === "ai_retry") {
     const stored = lastPrompts.get(targetUserId);
     if (!stored) {
@@ -1934,37 +1707,6 @@ async function handleModal(interaction) {
       content: "This modal isn't for you.",
       ephemeral: true,
     });
-    return;
-  }
-
-  if (modalKind === "ai_modal_anilist") {
-    const username = interaction.fields
-      .getTextInputValue("anilist_username")
-      .trim();
-
-    try {
-      const saved = setAniListUsername(targetUserId, username);
-      await deferAndNotifyThinking(interaction, targetUserId);
-
-      if (mode === "recs") {
-        await runAIChat(
-          interaction,
-          `Use AniList tools to inspect ${saved}'s currently watched anime and suggest 8 tailored recommendations with short reasons.`,
-          { isFollowUp: true },
-        );
-      } else {
-        await runAIChat(
-          interaction,
-          `Use AniList tools to show my profile overview for username ${saved}. Include key stats and 3 suggestions for what to watch next.`,
-          { isFollowUp: true },
-        );
-      }
-    } catch (err) {
-      await interaction.reply({
-        content: err?.message || "Invalid AniList username format.",
-        ephemeral: true,
-      });
-    }
     return;
   }
 
