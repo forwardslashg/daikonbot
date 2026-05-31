@@ -111,11 +111,22 @@ function startReminderScheduler(client) {
 
     for (const rem of due) {
       try {
+        // Try original channel first (guild text channel)
         const channel = await client.channels
           .fetch(rem.channelId)
           .catch(() => null);
-        if (!channel?.send) continue;
-        await channel.send(`⏰ <@${rem.userId}> **Reminder:** ${rem.text}`);
+        if (channel?.send) {
+          await channel.send(`⏰ <@${rem.userId}> **Reminder:** ${rem.text}`);
+          continue;
+        }
+      } catch {}
+
+      // Fallback: DM the user directly (user-installed bot)
+      try {
+        const user = await client.users.fetch(rem.userId).catch(() => null);
+        if (user) {
+          await user.send(`⏰ **Reminder:** ${rem.text}`);
+        }
       } catch (err) {
         console.error(
           `[REMINDERS] Failed to deliver ${rem.id}:`,
