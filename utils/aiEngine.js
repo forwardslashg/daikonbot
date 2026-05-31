@@ -6,10 +6,11 @@
 
 const { ChannelType } = require("discord.js");
 const {
-  GoogleGenerativeAI,
+  GoogleGenAI,
   HarmCategory,
   HarmBlockThreshold,
-} = require("@google/generative-ai");
+  FunctionCallingConfigMode,
+} = require("@google/genai");
 // ─── Appwrite-backed storage (write-through cache) ────────────────────────────
 let _appwrite = null;
 let _dbAvailable = false;
@@ -816,6 +817,55 @@ function sanitizeAIOutput(text) {
   return String(text ?? "").trim();
 }
 
+function inferGeminiSchemaFromDescription(description) {
+  const lower = String(description ?? "").toLowerCase();
+
+  if (lower.startsWith("number")) return { type: "number", description };
+  if (lower.startsWith("boolean")) return { type: "boolean", description };
+  if (lower.startsWith("array")) {
+    return {
+      type: "array",
+      items: { type: "string" },
+      description,
+    };
+  }
+
+  return { type: "string", description };
+}
+
+function buildGeminiFunctionDeclarations(tools = []) {
+  if (!Array.isArray(tools) || !tools.length) return [];
+
+  return tools.map((tool) => {
+    const properties = {};
+    const required = [];
+
+    for (const [name, description] of Object.entries(
+      tool.argumentsSchema ?? {},
+    )) {
+      properties[name] = inferGeminiSchemaFromDescription(description);
+      if (String(description).toLowerCase().includes("required")) {
+        required.push(name);
+      }
+    }
+
+    const declaration = {
+      name: tool.name,
+      description: tool.description,
+    };
+
+    if (Object.keys(properties).length) {
+      declaration.parametersJsonSchema = {
+        type: "object",
+        properties,
+        ...(required.length ? { required } : {}),
+      };
+    }
+
+    return declaration;
+  });
+}
+
 function normalizeGeminiHistory(history = []) {
   if (!Array.isArray(history)) return [];
 
@@ -858,10 +908,9 @@ async function callGemini(
     throw new Error("GOOGLE_AI_KEY is missing.");
   }
 
-  const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_KEY);
+  const genAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_KEY });
   const isGemma = isGemmaModel(modelName);
-  const generationConfig = {
-    model: modelName,
+  const config = {
     systemInstruction,
     safetySettings: [
       HarmCategory.HARM_CATEGORY_HARASSMENT,
@@ -876,16 +925,31 @@ async function callGemini(
   };
 
   if (isGemma) {
-    generationConfig.tools = [{ googleSearch: {} }];
+    config.tools = [{ googleSearch: {} }];
   }
 
-  const model = genAI.getGenerativeModel(generationConfig);
+  const functionDeclarations = buildGeminiFunctionDeclarations(options.tools);
+  if (functionDeclarations.length) {
+    config.tools = [
+      ...(config.tools ?? []),
+      { functionDeclarations },
+    ];
+    config.toolConfig = {
+      functionCallingConfig: {
+        mode: FunctionCallingConfigMode?.AUTO ?? "AUTO",
+      },
+    };
+  }
 
-  const chat = model.startChat({ history: normalizeGeminiHistory(history) });
+  const chat = genAI.chats.create({
+    model: modelName,
+    config,
+    history: normalizeGeminiHistory(history),
+  });
 
   let result;
   try {
-    result = await chat.sendMessage(userMessage);
+    result = await chat.sendMessage({ message: userMessage });
   } catch (err) {
     // Rate limits should propagate for retry logic
     if (err?.status === 429) throw err;
@@ -913,7 +977,14 @@ async function callGemini(
   // Extract text excluding thought parts
   let finalText = "";
   let nativeFunctionCall = null;
-  const candidate = result.response.candidates?.[0];
+  const candidate = result.candidates?.[0];
+  const functionCalls = result.functionCalls;
+  if (functionCalls?.length) {
+    nativeFunctionCall = {
+      tool: functionCalls[0].name,
+      arguments: functionCalls[0].args ?? {},
+    };
+  }
   if (candidate?.content?.parts) {
     for (const part of candidate.content.parts) {
       if (part.thought) {
@@ -946,9 +1017,7 @@ async function callGemini(
 
   // Fallback: use response.text() if parts extraction yielded nothing
   if (!finalText) {
-    try {
-      finalText = result.response.text();
-    } catch {}
+    finalText = result.text ?? "";
   }
 
   if (options.metadataCollector) {
@@ -970,13 +1039,13 @@ async function callGemini(
 
   finalText = finalText.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 
-  if (!finalText && result.response) {
+  if (!finalText && result) {
     console.error(
-      `[GEMINI] Empty response. model=${modelName} hasCandidates=${!!result.response.candidates} prompt=${userMessage.slice(0, 80)}`,
+      `[GEMINI] Empty response. model=${modelName} hasCandidates=${!!result.candidates} prompt=${userMessage.slice(0, 80)}`,
     );
 
     // Check prompt-level block (no candidates at all)
-    const promptBlock = result.response.promptFeedback?.blockReason;
+    const promptBlock = result.promptFeedback?.blockReason;
     if (promptBlock) {
       console.error(`[GEMINI] promptFeedback.blockReason=${promptBlock}`);
       finalText = `*[Content blocked by safety filter (${promptBlock})]*`;
@@ -1078,11 +1147,49 @@ function extractToolEnvelope(text) {
 
   // Then try fenced json blocks.
   const blockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (!blockMatch) return null;
+  if (blockMatch) {
+    const inBlock = safeJsonParse(blockMatch[1].trim());
+    if (inBlock?.tool && typeof inBlock.tool === "string") {
+      return inBlock;
+    }
+  }
 
-  const inBlock = safeJsonParse(blockMatch[1].trim());
-  if (inBlock?.tool && typeof inBlock.tool === "string") {
-    return inBlock;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] !== "{") continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let j = i; j < trimmed.length; j++) {
+      const ch = trimmed[j];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const embedded = safeJsonParse(trimmed.slice(i, j + 1));
+          if (embedded?.tool && typeof embedded.tool === "string") {
+            return embedded;
+          }
+          break;
+        }
+      }
+    }
   }
 
   return null;
@@ -1138,7 +1245,8 @@ async function callAIWithTools(
   const seenToolCalls = new Set();
 
   const protocol = buildToolProtocol(tools);
-  const mergedSystemInstruction = protocol
+  const useNativeGeminiTools = options.provider === AI_PROVIDERS.GEMINI;
+  const mergedSystemInstruction = protocol && !useNativeGeminiTools
     ? `${systemInstruction}\n\n${protocol}`
     : systemInstruction;
 
@@ -1147,7 +1255,7 @@ async function callAIWithTools(
       mergedSystemInstruction,
       currentPrompt,
       workingHistory,
-      options,
+      { ...options, tools },
     );
     const envelope = extractToolEnvelope(output);
 
