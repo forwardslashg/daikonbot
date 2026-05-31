@@ -160,7 +160,40 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ── Everything else (buttons, selects, modals) — no longer used ────────────
+  // ── Button interactions (aimodel only) ─────────────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("aimodel_")) {
+    const aimodelCmd = client.commands.get("aimodel");
+    if (aimodelCmd?.handleButton) {
+      try {
+        await aimodelCmd.handleButton(interaction);
+      } catch (err) {
+        await safeReplyError(interaction, `btn:${interaction.customId}`, err);
+      }
+    }
+    return;
+  }
+
+  // ── String select menus (aimodel only) ─────────────────────────────────────
+  if (
+    interaction.isStringSelectMenu() &&
+    interaction.customId.startsWith("aimodel_")
+  ) {
+    const aimodelCmd = client.commands.get("aimodel");
+    if (aimodelCmd?.handleSelectMenu) {
+      try {
+        await aimodelCmd.handleSelectMenu(interaction);
+      } catch (err) {
+        await safeReplyError(
+          interaction,
+          `select:${interaction.customId}`,
+          err,
+        );
+      }
+    }
+    return;
+  }
+
+  // ── Everything else (unused modals, other buttons) ─────────────────────────
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
