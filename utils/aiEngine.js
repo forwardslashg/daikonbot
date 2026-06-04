@@ -1723,67 +1723,17 @@ async function streamResponse(interaction, text, options = {}) {
         ? metadataCollector.latencyMs
         : null;
 
-  // Long responses: skip streaming, send in bulk to avoid Discord truncation
-  if (trimmed.length >= STREAM_MAX_LENGTH) {
-    const payload = buildFinalPayload(trimmed, {
-      metadataCollector,
-      footer,
-      buttons,
-      thinkingMs,
-    });
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(payload);
-    } else {
-      await interaction.reply(payload);
-    }
-    return;
-  }
+  const payload = buildFinalPayload(trimmed, {
+    metadataCollector,
+    footer,
+    buttons,
+    thinkingMs,
+  });
 
-  const paragraphs = parseParagraphs(trimmed);
-  if (!paragraphs.length) return;
-
-  const accumulated = [];
-  let currentContent = "";
-
-  for (let i = 0; i < paragraphs.length; i++) {
-    accumulated.push(paragraphs[i]);
-    const isLast = i === paragraphs.length - 1;
-    currentContent = accumulated.join("\n\n");
-
-    // First and last paragraphs always send; mid paragraphs update every other to avoid rate limits
-    if (!isLast && i > 0 && i % 2 === 0) continue;
-
-    try {
-      if (isLast) {
-        const payload = buildFinalPayload(currentContent, {
-          metadataCollector,
-          footer,
-          buttons,
-          thinkingMs,
-        });
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply(payload);
-        } else {
-          await interaction.reply(payload);
-        }
-      } else if (i === 0) {
-        if (interaction.deferred || interaction.replied) {
-          await interaction
-            .editReply({ content: currentContent })
-            .catch(() => {});
-        }
-      } else {
-        await new Promise((r) => setTimeout(r, 400));
-        if (interaction.deferred || interaction.replied) {
-          await interaction
-            .editReply({ content: currentContent })
-            .catch(() => {});
-        }
-      }
-    } catch (err) {
-      // Ignore edit failures during streaming, but propagate final payload failures
-      if (isLast) throw err;
-    }
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply(payload);
+  } else {
+    await interaction.reply(payload);
   }
 }
 
