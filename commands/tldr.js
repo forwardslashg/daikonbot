@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, MessageFlags, InteractionContextType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, InteractionContextType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -110,18 +110,23 @@ module.exports = {
         return;
       }
 
-      const container = new ContainerBuilder()
-        .setAccentColor(0x6366f1)
-        .addTextDisplayComponents(
-          new TextDisplayBuilder().setContent(`# 📋 TL;DR — ${channelName}`),
-          new TextDisplayBuilder().setContent(text.slice(0, 4000)),
-          new TextDisplayBuilder().setContent(`- # Last ${count} messages · Requested by ${interaction.user.username}`)
-        );
+      const container = {
+    type: 17,
+    accent_color: 0x6366f1,
+    components: [
+      { type: 10, content: `# 📋 TL;DR — ${channelName}` },
+      { type: 10, content: text.slice(0, 4000) },
+      { type: 10, content: `- # Last ${count} messages · Requested by ${interaction.user.username}` }
+    ]
+  };
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
+      if (footer) {
+        container.components.push({ type: 10, content: footer });
+      }
 
       await sendWithRetry(() =>
-        interaction.editReply({ flags: MessageFlags.IsComponentsV2, components: [container], content: footer ?? undefined }),
+        interaction.editReply({ flags: 32768, components: [container] }),
       );
     } catch (err) {
       console.error('[tldr]', err);

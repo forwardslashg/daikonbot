@@ -1,4 +1,4 @@
-const { ContextMenuCommandBuilder, ApplicationCommandType, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { ContextMenuCommandBuilder, ApplicationCommandType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -86,26 +86,31 @@ module.exports = {
       const colours = [0x8b5cf6, 0x06b6d4, 0xf59e0b, 0x10b981, 0xec4899];
       const colour  = colours[Math.floor(Math.random() * colours.length)];
 
-      const container = new ContainerBuilder()
-        .setAccentColor(colour)
-        .addSectionComponents(
-          new SectionBuilder()
-            .addTextDisplayComponents(
-              new TextDisplayBuilder().setContent(`# ✨ Vibe Check: ${displayName}`),
-              new TextDisplayBuilder().setContent(text)
-            )
-            .setThumbnailAccessory(
-              new ThumbnailBuilder().setURL(fetched.displayAvatarURL({ size: 128 }))
-            )
-        )
-        .addTextDisplayComponents(
-          new TextDisplayBuilder().setContent(`- # ${`Requested by ${interaction.user.username}`}`)
-        );
+      const container = {
+      type: 17,
+      accent_color: colour,
+      components: [
+        {
+          type: 9,
+          components: [
+            { type: 10, content: `# ✨ Vibe Check: ${displayName}` },
+            { type: 10, content: text }
+          ],
+          accessory: { type: 11, media: { url: fetched.displayAvatarURL({ size: 128 }) } }
+        },
+        { type: 10, content: `- # ${isSelf ? `${interaction.user.username} wanted their vibes read` : `Requested by ${interaction.user.username}`}` }
+      ]
+    };
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
+      if (footer) {
+        container.components.push({ type: 10, content: footer });
+      }
 
       await sendWithRetry(() =>
-        interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2, content: footer ?? undefined }),
+        interaction.editReply({
+          components: [container], flags: 32768
+        }),
       );
     } catch (err) {
       console.error('[vibe ctx]', err);
@@ -115,8 +120,7 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-
-
+        components: [makeRecoveryButtons(userId)]
       }).catch(() => {});
     }
   },

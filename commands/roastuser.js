@@ -1,4 +1,4 @@
-const { ContextMenuCommandBuilder, ApplicationCommandType, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { ContextMenuCommandBuilder, ApplicationCommandType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -81,26 +81,31 @@ module.exports = {
         return;
       }
 
-      const container = new ContainerBuilder()
-        .setAccentColor(0xef4444)
-        .addSectionComponents(
-          new SectionBuilder()
-            .addTextDisplayComponents(
-              new TextDisplayBuilder().setContent(`# 🔥 Roast: ${displayName}`),
-              new TextDisplayBuilder().setContent(text)
-            )
-            .setThumbnailAccessory(
-              new ThumbnailBuilder().setURL(fetched.displayAvatarURL({ size: 128 }))
-            )
-        )
-        .addTextDisplayComponents(
-          new TextDisplayBuilder().setContent(`- # ${`Requested by ${interaction.user.username}`}`)
-        );
+      const container = {
+      type: 17,
+      accent_color: 0xef4444,
+      components: [
+        {
+          type: 9,
+          components: [
+            { type: 10, content: `# 🔥 Roast: ${displayName}` },
+            { type: 10, content: text }
+          ],
+          accessory: { type: 11, media: { url: fetched.displayAvatarURL({ size: 128 }) } }
+        },
+        { type: 10, content: `- # ${isSelf ? `${interaction.user.username} asked for this` : `Requested by ${interaction.user.username}`}` }
+      ]
+    };
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
+      if (footer) {
+        container.components.push({ type: 10, content: footer });
+      }
 
       await sendWithRetry(() =>
-        interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2, content: footer ?? undefined }),
+        interaction.editReply({
+          components: [container], flags: 32768
+        }),
       );
     } catch (err) {
       console.error('[roast ctx]', err);
@@ -110,8 +115,7 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-
-
+        components: [makeRecoveryButtons(userId)]
       }).catch(() => {});
     }
   },

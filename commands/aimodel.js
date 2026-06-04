@@ -94,35 +94,38 @@ function buildStatusEmbed(
 
   const mode = currentMode;
 
-  const container = new ContainerBuilder()
-    .setAccentColor(0x00a884)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent('# ⚙️ AI settings'),
-      new TextDisplayBuilder().setContent(`Target: **${scopeLabel(scope)}**\nPick a provider below, then choose a model.`)
-    );
+  const container = {
+    type: 17,
+    accent_color: 0x00a884,
+    components: [
+      { type: 10, content: '# ⚙️ AI settings' },
+      { type: 10, content: `Target: **${scopeLabel(scope)}**\nPick a provider below, then choose a model.` }
+    ]
+  };
 
   const embed = {
     addFields: function(...fields) {
       for (const arg of fields) {
         if (Array.isArray(arg)) {
           for (const f of arg) {
-            container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${f.name}**\n${f.value}`));
+            container.components.push({ type: 10, content: `**${f.name}**\n${f.value}` });
           }
         } else {
-          container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${arg.name}**\n${arg.value}`));
+          container.components.push({ type: 10, content: `**${arg.name}**\n${arg.value}` });
         }
       }
     },
     setFooter: function({ text }) {
-      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`- # ${text}`));
+      container.components.push({ type: 10, content: `- # ${text}` });
     },
     setDescription: function(text) {
       container.components[1] = { type: 10, content: text };
     }
   };
 
+  embed.addFields({ name: "Selected", value: selectionSummary(effective) });
+
   if (scope === SCOPE_USER) {
-    embed.addFields({ name: "Selected", value: selectionSummary(selected) });
     const modeLabel =
       mode === "unfiltered"
         ? "🔓 Unfiltered"
@@ -350,7 +353,7 @@ module.exports = {
     const mode = await getUserMode(interaction.user.id);
 
     await interaction.reply({
-      flags: MessageFlags.IsComponentsV2, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
+      flags: 32768, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
             buildProviderMenu(interaction.user.id, scope, selected.provider),
         buildModeMenu(interaction.user.id, mode),
         buildActionButtons(interaction.user.id, scope)
@@ -394,7 +397,7 @@ module.exports = {
       const mode = await getUserMode(targetUserId);
 
       await interaction.update({
-        flags: MessageFlags.IsComponentsV2, components: [
+        flags: 32768, components: [
           buildStatusEmbed(targetUserId, scope, selected, mode, provider),
             buildModelMenu(targetUserId, scope, provider),
           buildActionButtons(targetUserId, scope, true)
@@ -457,7 +460,7 @@ module.exports = {
       container.components[1] = { type: 10, content: `✅ Model updated to **${parsed.model}** (${providerLabel(parsed.provider)})` };
 
       await interaction.update({
-        flags: MessageFlags.IsComponentsV2, components: [container,
+        flags: 32768, components: [container,
             buildProviderMenu(targetUserId, scope, parsed.provider),
           buildModeMenu(targetUserId, mode),
           buildActionButtons(targetUserId, scope)
@@ -508,7 +511,7 @@ module.exports = {
       container.components[1] = { type: 10, content: `✅ Mode set to **${selectedMode}**${consentNote}` };
 
       await interaction.update({
-        flags: MessageFlags.IsComponentsV2, components: [container,
+        flags: 32768, components: [container,
             buildProviderMenu(targetUserId, scope, selected.provider),
           buildModeMenu(targetUserId, selectedMode),
           buildActionButtons(targetUserId, scope)
@@ -541,7 +544,7 @@ module.exports = {
 
       const resetMode = await getUserMode(interaction.user.id);
       await interaction.update({
-        flags: MessageFlags.IsComponentsV2, components: [
+        flags: 32768, components: [
           buildStatusEmbed(
             interaction.user.id,
             SCOPE_USER,
@@ -577,7 +580,7 @@ module.exports = {
       const mode = await getUserMode(interaction.user.id);
 
       await interaction.update({
-        flags: MessageFlags.IsComponentsV2, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
+        flags: 32768, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
             buildProviderMenu(interaction.user.id, scope, selected.provider),
           buildModeMenu(interaction.user.id, mode),
           buildActionButtons(interaction.user.id, scope)
