@@ -1265,7 +1265,15 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
         console.error("[AI V2 component error]", err);
         await sendWithRetry(() =>
           interaction[send]({
-            content: footer ? `${chunks[0]}\n${footer}` : chunks[0],
+            flags: 32768,
+            components: [
+              {
+                type: 17,
+                components: [
+                  { type: 10, content: footer ? `${chunks[0]}\n${footer}` : chunks[0] }
+                ]
+              }
+            ]
           }),
         );
       }
@@ -1285,7 +1293,15 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
       const last = chunks[chunks.length - 1];
       await sendWithRetry(() =>
         interaction.followUp({
-          content: footer ? `${last}\n${footer}` : last,
+          flags: 32768,
+          components: [
+            {
+              type: 17,
+              components: [
+                { type: 10, content: footer ? `${last}\n${footer}` : last }
+              ]
+            }
+          ]
         }),
       );
     }

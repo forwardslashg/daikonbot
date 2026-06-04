@@ -94,15 +94,35 @@ function buildStatusEmbed(
 
   const mode = currentMode;
 
-  const embed = new EmbedBuilder()
-    .setColor(0x00a884)
-    .setTitle("AI settings")
-    .setDescription(
-      `Target: **${scopeLabel(scope)}**\nPick a provider below, then choose a model.`,
-    )
-    .addFields({ name: "Selected", value: selectionSummary(effective) });
+  const container = new ContainerBuilder()
+    .setAccentColor(0x00a884)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('# ⚙️ AI settings'),
+      new TextDisplayBuilder().setContent(`Target: **${scopeLabel(scope)}**\nPick a provider below, then choose a model.`)
+    );
+
+  const embed = {
+    addFields: function(...fields) {
+      for (const arg of fields) {
+        if (Array.isArray(arg)) {
+          for (const f of arg) {
+            container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${f.name}**\n${f.value}`));
+          }
+        } else {
+          container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${arg.name}**\n${arg.value}`));
+        }
+      }
+    },
+    setFooter: function({ text }) {
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`- # ${text}`));
+    },
+    setDescription: function(text) {
+      container.components[1] = { type: 10, content: text };
+    }
+  };
 
   if (scope === SCOPE_USER) {
+    embed.addFields({ name: "Selected", value: selectionSummary(selected) });
     const modeLabel =
       mode === "unfiltered"
         ? "🔓 Unfiltered"
@@ -147,7 +167,7 @@ function buildStatusEmbed(
     text: scope === SCOPE_DEFAULT ? "Owner mode" : "Your personal selection",
   });
 
-  return embed;
+  return container;
 }
 
 function buildProviderMenu(userId, scope, currentProvider = null) {
@@ -330,12 +350,11 @@ module.exports = {
     const mode = await getUserMode(interaction.user.id);
 
     await interaction.reply({
-      embeds: [buildStatusEmbed(interaction.user.id, scope, selected, mode)],
-      components: [
-        buildProviderMenu(interaction.user.id, scope, selected.provider),
+      flags: MessageFlags.IsComponentsV2, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
+            buildProviderMenu(interaction.user.id, scope, selected.provider),
         buildModeMenu(interaction.user.id, mode),
-        buildActionButtons(interaction.user.id, scope),
-      ],
+        buildActionButtons(interaction.user.id, scope)
+          ],
       ephemeral: true,
     });
   },
@@ -375,13 +394,11 @@ module.exports = {
       const mode = await getUserMode(targetUserId);
 
       await interaction.update({
-        embeds: [
+        flags: MessageFlags.IsComponentsV2, components: [
           buildStatusEmbed(targetUserId, scope, selected, mode, provider),
-        ],
-        components: [
-          buildModelMenu(targetUserId, scope, provider),
-          buildActionButtons(targetUserId, scope, true),
-        ],
+            buildModelMenu(targetUserId, scope, provider),
+          buildActionButtons(targetUserId, scope, true)
+          ],
       });
 
       return true;
@@ -436,18 +453,15 @@ module.exports = {
       }
       const mode = await getUserMode(targetUserId);
 
-      const embed = buildStatusEmbed(targetUserId, scope, saved, mode);
-      embed.setDescription(
-        `✅ Model updated to **${parsed.model}** (${providerLabel(parsed.provider)})`,
-      );
+      const container = buildStatusEmbed(targetUserId, scope, saved, mode);
+      container.components[1] = { type: 10, content: `✅ Model updated to **${parsed.model}** (${providerLabel(parsed.provider)})` };
 
       await interaction.update({
-        embeds: [embed],
-        components: [
-          buildProviderMenu(targetUserId, scope, parsed.provider),
+        flags: MessageFlags.IsComponentsV2, components: [container,
+            buildProviderMenu(targetUserId, scope, parsed.provider),
           buildModeMenu(targetUserId, mode),
-          buildActionButtons(targetUserId, scope),
-        ],
+          buildActionButtons(targetUserId, scope)
+          ],
       });
 
       return true;
@@ -480,7 +494,7 @@ module.exports = {
           ? getDefaultAISelection()
           : getEffectiveAISelection(interaction.user.id);
 
-      const embed = buildStatusEmbed(
+      const container = buildStatusEmbed(
         interaction.user.id,
         scope,
         selected,
@@ -491,15 +505,14 @@ module.exports = {
         !(await hasUnfilteredPlusConsent(targetUserId))
           ? "\n\n⚠️ **Unfiltered+** requires consent. It will be requested on first `/ai` use."
           : "";
-      embed.setDescription(`✅ Mode set to **${selectedMode}**${consentNote}`);
+      container.components[1] = { type: 10, content: `✅ Mode set to **${selectedMode}**${consentNote}` };
 
       await interaction.update({
-        embeds: [embed],
-        components: [
-          buildProviderMenu(targetUserId, scope, selected.provider),
+        flags: MessageFlags.IsComponentsV2, components: [container,
+            buildProviderMenu(targetUserId, scope, selected.provider),
           buildModeMenu(targetUserId, selectedMode),
-          buildActionButtons(targetUserId, scope),
-        ],
+          buildActionButtons(targetUserId, scope)
+          ],
       });
 
       return true;
@@ -528,16 +541,14 @@ module.exports = {
 
       const resetMode = await getUserMode(interaction.user.id);
       await interaction.update({
-        embeds: [
+        flags: MessageFlags.IsComponentsV2, components: [
           buildStatusEmbed(
             interaction.user.id,
             SCOPE_USER,
             effective,
             resetMode,
           ),
-        ],
-        components: [
-          buildProviderMenu(
+            buildProviderMenu(
             interaction.user.id,
             SCOPE_USER,
             effective.provider,
@@ -566,12 +577,11 @@ module.exports = {
       const mode = await getUserMode(interaction.user.id);
 
       await interaction.update({
-        embeds: [buildStatusEmbed(interaction.user.id, scope, selected, mode)],
-        components: [
-          buildProviderMenu(interaction.user.id, scope, selected.provider),
+        flags: MessageFlags.IsComponentsV2, components: [buildStatusEmbed(interaction.user.id, scope, selected, mode),
+            buildProviderMenu(interaction.user.id, scope, selected.provider),
           buildModeMenu(interaction.user.id, mode),
-          buildActionButtons(interaction.user.id, scope),
-        ],
+          buildActionButtons(interaction.user.id, scope)
+          ],
       });
       return true;
     }

@@ -1689,7 +1689,16 @@ function buildFinalPayload(text, options = {}) {
     finalParts.push(footer);
   }
 
-  const payload = { content: finalParts.join("\n") };
+  const { MessageFlags, ContainerBuilder, TextDisplayBuilder } = require('discord.js');
+  const payload = {
+    flags: MessageFlags.IsComponentsV2,
+    components: [
+      new ContainerBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(finalParts.join("\n"))
+        )
+    ]
+  };
   if (buttons) payload.components = [buttons];
   return payload;
 }
