@@ -1265,6 +1265,7 @@ async function runAIChat(interaction, promptText, { isFollowUp = false } = {}) {
         console.error("[AI V2 component error]", err);
         await sendWithRetry(() =>
           interaction[send]({
+            content: "",
             flags: 32768,
             components: [
               {

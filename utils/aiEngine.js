@@ -1691,6 +1691,7 @@ function buildFinalPayload(text, options = {}) {
 
   const { MessageFlags, ContainerBuilder, TextDisplayBuilder } = require('discord.js');
   const payload = {
+    content: "",
     flags: MessageFlags.IsComponentsV2,
     components: [
       new ContainerBuilder()
@@ -1731,9 +1732,9 @@ async function streamResponse(interaction, text, options = {}) {
       thinkingMs,
     });
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(payload).catch(() => {});
+      await interaction.editReply(payload);
     } else {
-      await interaction.reply(payload).catch(() => {});
+      await interaction.reply(payload);
     }
     return;
   }
