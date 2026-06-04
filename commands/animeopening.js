@@ -1,6 +1,6 @@
 const {
   SlashCommandBuilder,
-  EmbedBuilder,
+  ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MediaGalleryBuilder, MessageFlags,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -8,6 +8,79 @@ const {
   StringSelectMenuBuilder,
 } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
+
+class EmbedBuilder {
+  constructor() {
+    this.container = new ContainerBuilder();
+    this.title = null;
+    this.description = null;
+    this.thumbnailUrl = null;
+    this.imageUrl = null;
+    this.fields = [];
+    this.footer = null;
+    this.color = 0x3b82f6; // default color
+    this.url = null;
+  }
+  setTitle(t) { this.title = t; return this; }
+  setDescription(d) { this.description = d; return this; }
+  setThumbnail(u) { this.thumbnailUrl = u; return this; }
+  setImage(u) { this.imageUrl = u; return this; }
+  setColor(c) { this.color = c; return this; }
+  setURL(u) { this.url = u; return this; }
+  addFields(...f) {
+    for (const field of f) {
+      if (Array.isArray(field)) {
+        this.fields.push(...field);
+      } else {
+        this.fields.push(field);
+      }
+    }
+    return this;
+  }
+  setFooter(f) { this.footer = f.text; return this; }
+  setAuthor(a) { this.author = a.name; return this; }
+  setTimestamp() { return this; }
+
+  toJSON() {
+    this.container.setAccentColor(this.color);
+
+    // Add title/description/thumbnail in a section
+    if (this.title || this.description || this.thumbnailUrl) {
+      const section = new SectionBuilder();
+
+      let titleText = this.title ? `# ${this.title}` : '';
+      if (titleText && this.url) titleText = `# [${this.title}](${this.url})`;
+
+      if (titleText) section.addTextDisplayComponents(new TextDisplayBuilder().setContent(titleText));
+      if (this.description) section.addTextDisplayComponents(new TextDisplayBuilder().setContent(this.description));
+
+      if (this.thumbnailUrl) {
+        section.setThumbnailAccessory(new ThumbnailBuilder().setURL(this.thumbnailUrl));
+      }
+
+      if (section.components && section.components.length > 0) {
+        this.container.addSectionComponents(section);
+      }
+    }
+
+    for (const f of this.fields) {
+      this.container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${f.name}**\n${f.value}`));
+    }
+
+    if (this.imageUrl) {
+      this.container.addMediaGalleryComponents(
+        new MediaGalleryBuilder().addItems({ media: { url: this.imageUrl } })
+      );
+    }
+
+    if (this.footer) {
+      this.container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`- # ${this.footer}`));
+    }
+
+    return this.container.toJSON();
+  }
+}
+
 
 const ANIMETHEMES_API = 'https://api.animethemes.moe';
 const ANIMETHEMES_SITE = 'https://animethemes.moe';
@@ -362,8 +435,7 @@ async function promptUserToPickAnime(interaction, title, candidates) {
   const pickerEmbed = buildAnimePickerEmbed(title, candidates, page);
 
   await interaction.editReply({
-    embeds: [pickerEmbed],
-    components: initial.components,
+    flags: MessageFlags.IsComponentsV2, components: [pickerEmbed, ...initial.components],
   });
 
   const reply = await interaction.fetchReply();
@@ -391,7 +463,7 @@ async function promptUserToPickAnime(interaction, title, candidates) {
         page = built.safePage;
 
         await componentInteraction.update({
-          embeds: [buildAnimePickerEmbed(title, candidates, page)],
+          flags: MessageFlags.IsComponentsV2, components: [buildAnimePickerEmbed(title, candidates, page)],
           components: built.components,
         });
         return;
@@ -416,7 +488,7 @@ async function promptUserToPickAnime(interaction, title, candidates) {
   if (!picked) {
     await interaction.editReply({
       content: 'Selection timed out. Run the command again and pick an anime from the list.',
-      embeds: [],
+
       components: [],
     });
     return null;
@@ -707,8 +779,7 @@ module.exports = {
 
       await interaction.editReply({
         content: undefined,
-        embeds: [embed],
-        components: [],
+        flags: MessageFlags.IsComponentsV2, components: [embed],
       });
 
       console.info(`[animethemes] Embed sent anime="${resolvedAnimeName}" themes=${themeItems.length} elapsedMs=${Date.now() - startedAt}`);

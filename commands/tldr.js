@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, InteractionContextType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, MessageFlags, InteractionContextType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -110,16 +110,18 @@ module.exports = {
         return;
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle(`📋 TL;DR — ${channelName}`)
-        .setDescription(text.slice(0, 4000))
-        .setColor(0x6366f1)
-        .setFooter({ text: `Last ${count} messages · Requested by ${interaction.user.username}` });
+      const container = new ContainerBuilder()
+        .setAccentColor(0x6366f1)
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`# 📋 TL;DR — ${channelName}`),
+          new TextDisplayBuilder().setContent(text.slice(0, 4000)),
+          new TextDisplayBuilder().setContent(`- # Last ${count} messages · Requested by ${interaction.user.username}`)
+        );
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
 
       await sendWithRetry(() =>
-        interaction.editReply({ embeds: [embed], content: footer ?? undefined }),
+        interaction.editReply({ flags: MessageFlags.IsComponentsV2, components: [container], content: footer ?? undefined }),
       );
     } catch (err) {
       console.error('[tldr]', err);
@@ -129,7 +131,7 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-        embeds: [],
+
         components: [makeRecoveryButtons(userId)],
       }).catch(() => {});
     }

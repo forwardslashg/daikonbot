@@ -1,4 +1,4 @@
-const { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { ContextMenuCommandBuilder, ApplicationCommandType, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -81,17 +81,26 @@ module.exports = {
         return;
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle(`🔥 Roast: ${displayName}`)
-        .setDescription(text)
-        .setThumbnail(fetched.displayAvatarURL({ size: 128 }))
-        .setColor(0xef4444)
-        .setFooter({ text: `Requested by ${interaction.user.username}` });
+      const container = new ContainerBuilder()
+        .setAccentColor(0xef4444)
+        .addSectionComponents(
+          new SectionBuilder()
+            .addTextDisplayComponents(
+              new TextDisplayBuilder().setContent(`# 🔥 Roast: ${displayName}`),
+              new TextDisplayBuilder().setContent(text)
+            )
+            .setThumbnailAccessory(
+              new ThumbnailBuilder().setURL(fetched.displayAvatarURL({ size: 128 }))
+            )
+        )
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`- # ${`Requested by ${interaction.user.username}`}`)
+        );
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
 
       await sendWithRetry(() =>
-        interaction.editReply({ embeds: [embed], content: footer ?? undefined }),
+        interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2, content: footer ?? undefined }),
       );
     } catch (err) {
       console.error('[roast ctx]', err);
@@ -101,8 +110,8 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-        embeds: [],
-        components: [makeRecoveryButtons(userId)],
+
+
       }).catch(() => {});
     }
   },

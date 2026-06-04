@@ -1,4 +1,4 @@
-const { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { ContextMenuCommandBuilder, ApplicationCommandType, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -86,17 +86,26 @@ module.exports = {
       const colours = [0x8b5cf6, 0x06b6d4, 0xf59e0b, 0x10b981, 0xec4899];
       const colour  = colours[Math.floor(Math.random() * colours.length)];
 
-      const embed = new EmbedBuilder()
-        .setTitle(`✨ Vibe Check: ${displayName}`)
-        .setDescription(text)
-        .setThumbnail(fetched.displayAvatarURL({ size: 128 }))
-        .setColor(colour)
-        .setFooter({ text: `Requested by ${interaction.user.username}` });
+      const container = new ContainerBuilder()
+        .setAccentColor(colour)
+        .addSectionComponents(
+          new SectionBuilder()
+            .addTextDisplayComponents(
+              new TextDisplayBuilder().setContent(`# ✨ Vibe Check: ${displayName}`),
+              new TextDisplayBuilder().setContent(text)
+            )
+            .setThumbnailAccessory(
+              new ThumbnailBuilder().setURL(fetched.displayAvatarURL({ size: 128 }))
+            )
+        )
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`- # ${`Requested by ${interaction.user.username}`}`)
+        );
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
 
       await sendWithRetry(() =>
-        interaction.editReply({ embeds: [embed], content: footer ?? undefined }),
+        interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2, content: footer ?? undefined }),
       );
     } catch (err) {
       console.error('[vibe ctx]', err);
@@ -106,8 +115,8 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-        embeds: [],
-        components: [makeRecoveryButtons(userId)],
+
+
       }).catch(() => {});
     }
   },

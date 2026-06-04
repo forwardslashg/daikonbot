@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { userInstallConfig } = require('../utils/commandConfig');
 const {
   isOwner,
@@ -88,22 +88,27 @@ module.exports = {
       }
 
       const isSelf = interaction.user.id === target.id;
-      const embed  = new EmbedBuilder()
-        .setTitle(`🔥 Roast: ${displayName}`)
-        .setDescription(text)
-        .setThumbnail(fetched.displayAvatarURL({ size: 128 }))
-        .setColor(0xef4444)
-        .setFooter({
-          text: isSelf
-            ? `${interaction.user.username} asked for this`
-            : `Requested by ${interaction.user.username}`,
-        });
+      const container = new ContainerBuilder()
+        .setAccentColor(0xef4444)
+        .addSectionComponents(
+          new SectionBuilder()
+            .addTextDisplayComponents(
+              new TextDisplayBuilder().setContent(`# 🔥 Roast: ${displayName}`),
+              new TextDisplayBuilder().setContent(text)
+            )
+            .setThumbnailAccessory(
+              new ThumbnailBuilder().setURL(fetched.displayAvatarURL({ size: 128 }))
+            )
+        )
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`- # ${interaction.user.username} asked for this`)
+        );
 
       const footer = isOwner(userId) ? null : `-# ${remainingUses(userId)} AI credit(s) remaining this hour.`;
 
       await sendWithRetry(() =>
         interaction.editReply({
-          embeds: [embed],
+          components: [container], flags: MessageFlags.IsComponentsV2,
           content: footer ?? undefined,
         }),
       );
@@ -115,8 +120,8 @@ module.exports = {
         : 'An unknown AI error occurred. You can reset chat or switch models below and retry.';
       await interaction.editReply({
         content: msg,
-        embeds: [],
-        components: [makeRecoveryButtons(userId)],
+
+
       }).catch(() => {});
     }
   },
