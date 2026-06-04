@@ -1779,8 +1779,9 @@ async function streamResponse(interaction, text, options = {}) {
             .catch(() => {});
         }
       }
-    } catch {
-      // Ignore edit failures during streaming
+    } catch (err) {
+      // Ignore edit failures during streaming, but propagate final payload failures
+      if (isLast) throw err;
     }
   }
 }
