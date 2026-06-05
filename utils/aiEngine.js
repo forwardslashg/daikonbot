@@ -70,6 +70,7 @@ const PROVIDER_MODELS = {
     "gemini-3-flash-preview",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
+    "gemini-2.5-flash-image",
   ],
 };
 
@@ -79,7 +80,9 @@ const MODEL_CREDIT_COST = {
   "gemini-3-flash-preview": 1,
   "gemini-3.1-pro": 3,
   "gemini-3.1-pro-preview": 3,
+  "gemini-2.5-flash-image": 14,
 };
+
 
 const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
 const DEFAULT_MODEL_BY_PROVIDER = {
