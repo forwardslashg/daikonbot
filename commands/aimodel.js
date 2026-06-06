@@ -120,7 +120,7 @@ function buildStatusEmbed(
       container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`- # ${text}`));
     },
     setDescription: function(text) {
-      container.components[1] = { type: 10, content: text };
+      container.components[1] = new TextDisplayBuilder().setContent(text);
     }
   };
 
@@ -457,7 +457,7 @@ module.exports = {
       const mode = await getUserMode(targetUserId);
 
       const container = buildStatusEmbed(targetUserId, scope, saved, mode);
-      container.components[1] = { type: 10, content: `✅ Model updated to **${parsed.model}** (${providerLabel(parsed.provider)})` };
+      container.components[1] = new TextDisplayBuilder().setContent(`✅ Model updated to **${parsed.model}** (${providerLabel(parsed.provider)})`);
 
       await interaction.update({
         flags: MessageFlags.IsComponentsV2, components: [container,
@@ -508,7 +508,7 @@ module.exports = {
         !(await hasUnfilteredPlusConsent(targetUserId))
           ? "\n\n⚠️ **Unfiltered+** requires consent. It will be requested on first `/ai` use."
           : "";
-      container.components[1] = { type: 10, content: `✅ Mode set to **${selectedMode}**${consentNote}` };
+      container.components[1] = new TextDisplayBuilder().setContent(`✅ Mode set to **${selectedMode}**${consentNote}`);
 
       await interaction.update({
         flags: MessageFlags.IsComponentsV2, components: [container,

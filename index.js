@@ -1,9 +1,18 @@
-const { Client, Collection, GatewayIntentBits } = require("discord.js");
+const { Client, Collection, GatewayIntentBits, SectionBuilder } = require("discord.js");
 const { readdirSync } = require("fs");
 const { join } = require("path");
 require("dotenv").config();
 const { isOwner, initAIStorage } = require("./utils/aiEngine");
 const { startReminderScheduler } = require("./utils/reminders");
+
+// Monkeypatch SectionBuilder to allow optional/undefined accessories (V2 Components API compatibility fix)
+SectionBuilder.prototype.toJSON = function() {
+  return {
+    type: 9,
+    components: this.components.map((component) => component.toJSON()),
+    accessory: this.accessory ? this.accessory.toJSON() : undefined
+  };
+};
 
 if (!process.env.DISCORD_TOKEN) {
   console.error(
