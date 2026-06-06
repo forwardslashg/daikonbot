@@ -797,12 +797,58 @@ module.exports = {
       let selectedIndex = 0;
       let page = 0;
       const pickerPrefix = `animethemes_variant_${interaction.id}`;
-      const initial = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
-      page = initial.safePage;
+
+      const buildVariantResponse = (selIdx, p) => {
+        const variant = variants[selIdx];
+        const badges = buildVariantBadges(variant);
+        const badgeText = badges.length ? ` [${badges.join(' | ')}]` : '';
+        const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
+        const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Variant ${selIdx + 1}/${variants.length}`)
+          .setDescription(`${variant.themeLabel}${episodeText}${badgeText}\n\n[.](${autocompressorUrl})`)
+          .setColor(0x22c55e);
+
+        const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p);
+        embed.container.addActionRowComponents(...rebuilt.components);
+
+        return {
+          content: undefined,
+          flags: MessageFlags.IsComponentsV2,
+          components: [embed],
+          safePage: rebuilt.safePage
+        };
+      };
+
+      const buildVariantResponseDisabled = (selIdx, p) => {
+        const variant = variants[selIdx];
+        const badges = buildVariantBadges(variant);
+        const badgeText = badges.length ? ` [${badges.join(' | ')}]` : '';
+        const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
+        const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Variant ${selIdx + 1}/${variants.length}`)
+          .setDescription(`${variant.themeLabel}${episodeText}${badgeText}\n\n[.](${autocompressorUrl})`)
+          .setColor(0x22c55e);
+
+        const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p, true);
+        embed.container.addActionRowComponents(...rebuilt.components);
+
+        return {
+          content: undefined,
+          flags: MessageFlags.IsComponentsV2,
+          components: [embed]
+        };
+      };
+
+      const initialResp = buildVariantResponse(selectedIndex, page);
+      page = initialResp.safePage;
 
       const pickerMessage = await interaction.followUp({
-        content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
-        components: initial.components,
+        flags: initialResp.flags,
+        components: initialResp.components,
         fetchReply: true,
       });
 
@@ -829,12 +875,12 @@ module.exports = {
           if (action === 'prev') page -= 1;
           if (action === 'next') page += 1;
 
-          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
-          page = rebuilt.safePage;
+          const resp = buildVariantResponse(selectedIndex, page);
+          page = resp.safePage;
 
           await componentInteraction.update({
-            content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
-            components: rebuilt.components,
+            flags: resp.flags,
+            components: resp.components,
           });
           return;
         }
@@ -848,20 +894,24 @@ module.exports = {
 
           selectedIndex = idx;
           page = Math.floor(selectedIndex / 25);
-          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page);
-          page = rebuilt.safePage;
+          
+          const resp = buildVariantResponse(selectedIndex, page);
+          page = resp.safePage;
 
           await componentInteraction.update({
-            content: variantLine(variants[selectedIndex], selectedIndex, variants.length),
-            components: rebuilt.components,
+            flags: resp.flags,
+            components: resp.components,
           });
         }
       });
 
       collector.on('end', async () => {
         try {
-          const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, page, true);
-          await pickerMessage.edit({ components: rebuilt.components });
+          const resp = buildVariantResponseDisabled(selectedIndex, page);
+          await pickerMessage.edit({
+            flags: resp.flags,
+            components: resp.components,
+          });
         } catch {
           // Ignore if message was deleted or already edited.
         }
