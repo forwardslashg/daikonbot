@@ -799,24 +799,19 @@ module.exports = {
 
       let selectedIndex = 0;
       let page = 0;
-      const pickerPrefix = `animethemes_variant_${interaction.id}`;      const buildVariantResponse = (selIdx, p) => {
+      const pickerPrefix = `animethemes_variant_${interaction.id}`;
+      const buildVariantResponse = (selIdx, p) => {
         const variant = variants[selIdx];
         const badges = buildVariantBadges(variant);
         const badgeText = badges.length ? ` [${badges.join(' | ')}]` : '';
         const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
         const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
 
-        const embed = {
-          title: `Variant ${selIdx + 1}/${variants.length}`,
-          description: `### ${variant.themeLabel}${episodeText}${badgeText}`,
-          color: 0x22c55e
-        };
-
         const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p);
 
         return {
-          content: autocompressorUrl,
-          embeds: [embed],
+          content: `### Variant ${selIdx + 1}/${variants.length} • ${variant.themeLabel}${episodeText}${badgeText} [.](${autocompressorUrl})`,
+          embeds: undefined,
           components: rebuilt.components,
           safePage: rebuilt.safePage
         };
@@ -829,17 +824,11 @@ module.exports = {
         const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
         const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
 
-        const embed = {
-          title: `Variant ${selIdx + 1}/${variants.length}`,
-          description: `### ${variant.themeLabel}${episodeText}${badgeText}`,
-          color: 0x22c55e
-        };
-
         const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p, true);
 
         return {
-          content: autocompressorUrl,
-          embeds: [embed],
+          content: `### Variant ${selIdx + 1}/${variants.length} • ${variant.themeLabel}${episodeText}${badgeText} [.](${autocompressorUrl})`,
+          embeds: undefined,
           components: rebuilt.components
         };
       };
