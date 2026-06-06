@@ -799,27 +799,25 @@ module.exports = {
 
       let selectedIndex = 0;
       let page = 0;
-      const pickerPrefix = `animethemes_variant_${interaction.id}`;
-
-      const buildVariantResponse = (selIdx, p) => {
+      const pickerPrefix = `animethemes_variant_${interaction.id}`;      const buildVariantResponse = (selIdx, p) => {
         const variant = variants[selIdx];
         const badges = buildVariantBadges(variant);
         const badgeText = badges.length ? ` [${badges.join(' | ')}]` : '';
         const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
         const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
 
-        const embed = new EmbedBuilder()
-          .setTitle(`Variant ${selIdx + 1}/${variants.length}`)
-          .setDescription(`${variant.themeLabel}${episodeText}${badgeText}\n\n[.](${autocompressorUrl})`)
-          .setColor(0x22c55e);
+        const embed = {
+          title: `Variant ${selIdx + 1}/${variants.length}`,
+          description: `### ${variant.themeLabel}${episodeText}${badgeText}`,
+          color: 0x22c55e
+        };
 
         const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p);
-        embed.container.addActionRowComponents(...rebuilt.components);
 
         return {
-          content: undefined,
-          flags: MessageFlags.IsComponentsV2,
-          components: [embed],
+          content: autocompressorUrl,
+          embeds: [embed],
+          components: rebuilt.components,
           safePage: rebuilt.safePage
         };
       };
@@ -831,18 +829,18 @@ module.exports = {
         const episodeText = variant.episodes ? ` (${variant.episodes})` : '';
         const autocompressorUrl = `https://autocompressor.net/av1?v=${encodeURIComponent(variant.videoLink)}&i=${encodeURIComponent(imageUrl || '')}&w=1280&h=720`;
 
-        const embed = new EmbedBuilder()
-          .setTitle(`Variant ${selIdx + 1}/${variants.length}`)
-          .setDescription(`${variant.themeLabel}${episodeText}${badgeText}\n\n[.](${autocompressorUrl})`)
-          .setColor(0x22c55e);
+        const embed = {
+          title: `Variant ${selIdx + 1}/${variants.length}`,
+          description: `### ${variant.themeLabel}${episodeText}${badgeText}`,
+          color: 0x22c55e
+        };
 
         const rebuilt = buildVariantPickerComponents(pickerPrefix, interaction.user.id, variants, p, true);
-        embed.container.addActionRowComponents(...rebuilt.components);
 
         return {
-          content: undefined,
-          flags: MessageFlags.IsComponentsV2,
-          components: [embed]
+          content: autocompressorUrl,
+          embeds: [embed],
+          components: rebuilt.components
         };
       };
 
@@ -850,7 +848,8 @@ module.exports = {
       page = initialResp.safePage;
 
       const pickerMessage = await interaction.followUp({
-        flags: initialResp.flags,
+        content: initialResp.content,
+        embeds: initialResp.embeds,
         components: initialResp.components,
         fetchReply: true,
       });
@@ -882,7 +881,8 @@ module.exports = {
           page = resp.safePage;
 
           await componentInteraction.update({
-            flags: resp.flags,
+            content: resp.content,
+            embeds: resp.embeds,
             components: resp.components,
           });
           return;
@@ -902,7 +902,8 @@ module.exports = {
           page = resp.safePage;
 
           await componentInteraction.update({
-            flags: resp.flags,
+            content: resp.content,
+            embeds: resp.embeds,
             components: resp.components,
           });
         }
@@ -912,7 +913,8 @@ module.exports = {
         try {
           const resp = buildVariantResponseDisabled(selectedIndex, page);
           await pickerMessage.edit({
-            flags: resp.flags,
+            content: resp.content,
+            embeds: resp.embeds,
             components: resp.components,
           });
         } catch {
