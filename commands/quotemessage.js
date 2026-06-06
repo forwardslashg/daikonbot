@@ -40,8 +40,8 @@ class EmbedBuilder {
   toJSON() {
     this.container.setAccentColor(this.color);
 
-    // Add title/description/thumbnail in a section
-    if (this.title || this.description || this.thumbnailUrl) {
+    // Add title/description/thumbnail in a section if thumbnail exists
+    if (this.thumbnailUrl) {
       const section = new SectionBuilder();
 
       let titleText = this.title ? `# ${this.title}` : '';
@@ -50,13 +50,16 @@ class EmbedBuilder {
       if (titleText) section.addTextDisplayComponents(new TextDisplayBuilder().setContent(titleText));
       if (this.description) section.addTextDisplayComponents(new TextDisplayBuilder().setContent(this.description));
 
-      if (this.thumbnailUrl) {
-        section.setThumbnailAccessory(new ThumbnailBuilder().setURL(this.thumbnailUrl));
-      }
+      section.setThumbnailAccessory(new ThumbnailBuilder().setURL(this.thumbnailUrl));
 
-      if (section.components && section.components.length > 0) {
-        this.container.addSectionComponents(section);
-      }
+      this.container.addSectionComponents(section);
+    } else if (this.title || this.description) {
+      // No thumbnail, so add title/description directly to the container (no SectionBuilder needed)
+      let titleText = this.title ? `# ${this.title}` : '';
+      if (titleText && this.url) titleText = `# [${this.title}](${this.url})`;
+
+      if (titleText) this.container.addTextDisplayComponents(new TextDisplayBuilder().setContent(titleText));
+      if (this.description) this.container.addTextDisplayComponents(new TextDisplayBuilder().setContent(this.description));
     }
 
     for (const f of this.fields) {
